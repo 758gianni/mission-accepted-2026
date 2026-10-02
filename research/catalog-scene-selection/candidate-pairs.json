@@ -1,0 +1,504 @@
+{
+  "task": "catalog-scene-selection",
+  "generated_utc": "2026-10-02T23:19:28Z",
+  "collection": "Radarsat-2_Tropical_Forest_Products",
+  "collection_endpoint": "https://www.eodms-sgdot.nrcan-rncan.gc.ca/search/collections/Radarsat-2_Tropical_Forest_Products",
+  "items_endpoint": "https://www.eodms-sgdot.nrcan-rncan.gc.ca/search/collections/Radarsat-2_Tropical_Forest_Products/items",
+  "auth": "public metadata only, no bearer token requested, no product downloaded, no pixel data inspected",
+  "overlap_method": {
+    "library": "shapely 2.1.2 (GEOS)",
+    "operation": "full polygon intersection, not bbox intersection",
+    "area_projection": "Lambert azimuthal equal-area on WGS84 sphere (R=6370997 m) centred on the mean centroid of the series, so hectares are equal-area and distance from the projection origin stays small",
+    "footprint_source": "STAC item geometry (Polygon, EPSG:4326 / storageCrs CRS84) as returned by the public API; these are frame outlines, so overlap areas are outline-derived upper bounds on true common footprint",
+    "invalid_geometry_policy": "shapely.make_valid applied if a geometry failed is_valid"
+  },
+  "http_requests_issued": 15,
+  "data_queries": 13,
+  "query_log": [
+    {
+      "n": 1,
+      "method": "GET",
+      "url": "https://www.eodms-sgdot.nrcan-rncan.gc.ca/search/collections/Radarsat-2_Tropical_Forest_Products",
+      "purpose": "collection metadata",
+      "http": 200,
+      "bytes": 2316
+    },
+    {
+      "n": 2,
+      "method": "GET",
+      "url": ".../items?bbox=-62,-5,-55,0&limit=100",
+      "purpose": "scout central-Amazon items",
+      "http": 200,
+      "bytes": 283725
+    },
+    {
+      "n": "3-10",
+      "method": "GET",
+      "url": ".../items?bbox=-62,-5,-55,0&limit=200 (+7 next-page links)",
+      "purpose": "page 800 central-Amazon items (2013-08-29..2016-06-02)",
+      "http": 200
+    },
+    {
+      "n": 11,
+      "method": "GET",
+      "url": ".../queryables",
+      "purpose": "discover filterable properties",
+      "http": 200,
+      "bytes": 877
+    },
+    {
+      "n": 12,
+      "method": "POST",
+      "url": ".../items (CQL2 filter product_type='SGF')",
+      "purpose": "probe server-side product_type filter",
+      "http": 405,
+      "note": "POST not supported; no data returned"
+    },
+    {
+      "n": 13,
+      "method": "POST",
+      "url": ".../search (CQL2 filter)",
+      "purpose": "probe server-side product_type filter",
+      "http": 405,
+      "note": "POST not supported; no data returned"
+    },
+    {
+      "n": 14,
+      "method": "GET",
+      "url": ".../items?limit=200 (no bbox)",
+      "purpose": "oldest items in collection -> reveals SGF era",
+      "http": 200,
+      "bytes": 283266
+    },
+    {
+      "n": 15,
+      "method": "GET",
+      "url": ".../items?limit=200 (no bbox) page 2",
+      "purpose": "extend legacy/SGF sample",
+      "http": 200,
+      "bytes": 285580
+    }
+  ],
+  "primary_series": {
+    "series_name": "sgf-w3-vvvh-asc-ro98-sabah-borneo",
+    "series_attributes": {
+      "product_type": "SGF",
+      "product_format": "GeoTIFF",
+      "beam_mode": "Wide3",
+      "beam_mnemonic": "W3",
+      "polarization": "VV VH",
+      "orbit_direction": "ascending",
+      "relative_orbit": 98,
+      "applied_lut": "Constant-beta",
+      "sampled_pixel_spacing_m": 12.5,
+      "sampled_line_spacing_m": 12.5,
+      "megabytes_per_scene": [
+        355,
+        395,
+        395
+      ]
+    },
+    "acquisition_count": 3,
+    "first_datetime": "2009-08-12T10:24:43+00:00",
+    "last_datetime": "2010-02-20T10:24:47+00:00",
+    "total_span_days": 192,
+    "equal_area_projection_origin_lon_lat": [
+      118.8136,
+      5.4806
+    ],
+    "aoi_polygon_geojson": {
+      "type": "Polygon",
+      "coordinates": [
+        [
+          [
+            119.490288092,
+            5.114950366
+          ],
+          [
+            118.3408136835765,
+            4.8679599666738484
+          ],
+          [
+            118.1330014279234,
+            5.84351260411082
+          ],
+          [
+            119.284519509,
+            6.088719733
+          ],
+          [
+            119.490288092,
+            5.114950366
+          ]
+        ]
+      ]
+    },
+    "aoi_area_ha_all_scenes": 1442704.4,
+    "pairs": [
+      {
+        "a_id": "4ff7a4b5-57b0-5cde-bd8b-300a6903c0e7",
+        "b_id": "b8a8461b-0f00-5996-922e-76721012d178",
+        "a_datetime": "2009-08-12T10:24:43+00:00",
+        "b_datetime": "2009-11-16T10:24:48+00:00",
+        "a_order_key": "RS2_OK133876_PK1168492_DK1128203_W3_20090812_102443_VV_VH_SGF",
+        "b_order_key": "RS2_OK133876_PK1168508_DK1128219_W3_20091116_102448_VV_VH_SGF",
+        "a_absolute_orbit": 8673,
+        "b_absolute_orbit": 10045,
+        "gap_days": 96,
+        "a_footprint_ha": 1447874.4,
+        "b_footprint_ha": 1612622.6,
+        "overlap_ha": 1442704.4,
+        "overlap_frac_of_min_footprint": 0.9964,
+        "overlap_frac_of_a": 0.9964,
+        "overlap_frac_of_b": 0.8946,
+        "method": "shapely 2.1.2 polygon intersection in LAEA equal-area (metres) centred on the group centroid"
+      },
+      {
+        "a_id": "4ff7a4b5-57b0-5cde-bd8b-300a6903c0e7",
+        "b_id": "8178671e-0090-5be2-ad28-a176e4358b34",
+        "a_datetime": "2009-08-12T10:24:43+00:00",
+        "b_datetime": "2010-02-20T10:24:47+00:00",
+        "a_order_key": "RS2_OK133876_PK1168492_DK1128203_W3_20090812_102443_VV_VH_SGF",
+        "b_order_key": "RS2_OK133876_PK1168526_DK1128237_W3_20100220_102447_VV_VH_SGF",
+        "a_absolute_orbit": 8673,
+        "b_absolute_orbit": 11417,
+        "gap_days": 192,
+        "a_footprint_ha": 1447874.4,
+        "b_footprint_ha": 1610158.8,
+        "overlap_ha": 1443812.0,
+        "overlap_frac_of_min_footprint": 0.9972,
+        "overlap_frac_of_a": 0.9972,
+        "overlap_frac_of_b": 0.8967,
+        "method": "shapely 2.1.2 polygon intersection in LAEA equal-area (metres) centred on the group centroid"
+      },
+      {
+        "a_id": "b8a8461b-0f00-5996-922e-76721012d178",
+        "b_id": "8178671e-0090-5be2-ad28-a176e4358b34",
+        "a_datetime": "2009-11-16T10:24:48+00:00",
+        "b_datetime": "2010-02-20T10:24:47+00:00",
+        "a_order_key": "RS2_OK133876_PK1168508_DK1128219_W3_20091116_102448_VV_VH_SGF",
+        "b_order_key": "RS2_OK133876_PK1168526_DK1128237_W3_20100220_102447_VV_VH_SGF",
+        "a_absolute_orbit": 10045,
+        "b_absolute_orbit": 11417,
+        "gap_days": 95,
+        "a_footprint_ha": 1612622.6,
+        "b_footprint_ha": 1610158.8,
+        "overlap_ha": 1608927.1,
+        "overlap_frac_of_min_footprint": 0.9992,
+        "overlap_frac_of_a": 0.9977,
+        "overlap_frac_of_b": 0.9992,
+        "method": "shapely 2.1.2 polygon intersection in LAEA equal-area (metres) centred on the group centroid"
+      }
+    ],
+    "selection_rationale": "Preferred (smallest legitimate SGF series in the challenge collection). Nine acquisitions of the same RS2 W3 beam, same VV VH polarization, same ascending direction and same relative orbit 98, 24-day repeat cadence from 2009-08-12 to 2010-02-20 over interior Sabah, Malaysian Borneo (tropical forest). Picked the first, middle and last dates to maximise the temporal baseline (96 d + 96 d, 192 d total) for change detection instead of the min-overlap-optimised 47/48/95 d triple; polygon overlap is >=99.9% of the smaller footprint for every pair, so the longer baseline costs no overlap. Exactly one frame exists per date in this group, so no adjacent-frame ambiguity. 355-395 MB per scene vs 5.2-5.5 GB for the SLC alternative.",
+    "available_dates_in_group": [
+      "2009-08-12",
+      "2009-09-05",
+      "2009-09-29",
+      "2009-10-23",
+      "2009-11-16",
+      "2009-12-10",
+      "2010-01-03",
+      "2010-01-27",
+      "2010-02-20"
+    ],
+    "available_dates_count": 9,
+    "why_not_2009-11-16/2010-01-03/2010-02-20": "that triple scored marginally higher on minimum pairwise overlap (1608927 ha vs 1604178 ha) but compresses the baseline to 96 d; the 192 d triple is preferable for change detection.",
+    "alternative_sgf_group": {
+      "key": [
+        "SGF",
+        "W3",
+        "Wide3",
+        "VV VH",
+        "ascending",
+        240
+      ],
+      "dates": 8,
+      "span_days": 216,
+      "scene_mb": [
+        521,
+        529
+      ],
+      "centroid_lon_lat": [
+        116.95,
+        4.37
+      ],
+      "note": "same beam/polarization/orbit direction, 24-day cadence, south-west Sabah; larger and lower-latitude (closer to the coast) than ro98; also fully valid. Frames come in adjacent pairs per pass, so one frame per date must be chosen deliberately."
+    }
+  },
+  "comparison_series": {
+    "series_name": "slc-xf0w2-hh-asc-ro104-central-amazon",
+    "series_attributes": {
+      "product_type": "SLC",
+      "product_format": "GeoTIFF",
+      "beam_mode": "Extra Fine0",
+      "beam_mnemonic": "XF0W2",
+      "polarization": "HH",
+      "orbit_direction": "ascending",
+      "relative_orbit": 104,
+      "applied_lut": "Land",
+      "sampled_pixel_spacing_m": 2.662357,
+      "sampled_line_spacing_m": 2.49843,
+      "megabytes_per_scene": [
+        5497,
+        5497,
+        5497
+      ]
+    },
+    "acquisition_count": 3,
+    "first_datetime": "2014-05-06T22:08:17+00:00",
+    "last_datetime": "2016-04-01T22:07:53+00:00",
+    "total_span_days": 695,
+    "equal_area_projection_origin_lon_lat": [
+      -56.8771,
+      -2.6654
+    ],
+    "aoi_polygon_geojson": {
+      "type": "Polygon",
+      "coordinates": [
+        [
+          [
+            -57.72525440847474,
+            -1.4198447123237603
+          ],
+          [
+            -56.6422122496474,
+            -1.1755785345868344
+          ],
+          [
+            -56.379354443,
+            -2.359748228
+          ],
+          [
+            -57.463434619037294,
+            -2.6059508633044923
+          ],
+          [
+            -57.72525440847474,
+            -1.4198447123237603
+          ]
+        ]
+      ]
+    },
+    "aoi_area_ha_all_scenes": 1666364.5,
+    "pairs": [
+      {
+        "a_id": "cf749344-5897-4ae9-9f12-eb59c8cafdad",
+        "b_id": "87d1506d-8fd8-44c5-849f-61631e968c1e",
+        "a_datetime": "2014-05-06T22:08:17+00:00",
+        "b_datetime": "2015-04-07T22:08:08+00:00",
+        "a_order_key": "RS2_OK151247_PK1385617_DK1350411_XF0W2_20140506_220817_HH_SLC",
+        "b_order_key": "RS2_OK151584_PK1387509_DK1352132_XF0W2_20150407_220808_HH_SLC",
+        "a_absolute_orbit": 33375,
+        "b_absolute_orbit": 38177,
+        "gap_days": 335,
+        "a_footprint_ha": 1669061.8,
+        "b_footprint_ha": 1668769.9,
+        "overlap_ha": 1667488.8,
+        "overlap_frac_of_min_footprint": 0.9992,
+        "overlap_frac_of_a": 0.9991,
+        "overlap_frac_of_b": 0.9992,
+        "method": "shapely 2.1.2 polygon intersection in LAEA equal-area (metres) centred on the group centroid"
+      },
+      {
+        "a_id": "cf749344-5897-4ae9-9f12-eb59c8cafdad",
+        "b_id": "742988bf-062b-4fe7-995d-8620f0ade85a",
+        "a_datetime": "2014-05-06T22:08:17+00:00",
+        "b_datetime": "2016-04-01T22:07:53+00:00",
+        "a_order_key": "RS2_OK151247_PK1385617_DK1350411_XF0W2_20140506_220817_HH_SLC",
+        "b_order_key": "RS2_OK151671_PK1389651_DK1354430_XF0W2_20160401_220753_HH_SLC",
+        "a_absolute_orbit": 33375,
+        "b_absolute_orbit": 43322,
+        "gap_days": 695,
+        "a_footprint_ha": 1669061.8,
+        "b_footprint_ha": 1668921.2,
+        "overlap_ha": 1666598.5,
+        "overlap_frac_of_min_footprint": 0.9986,
+        "overlap_frac_of_a": 0.9985,
+        "overlap_frac_of_b": 0.9986,
+        "method": "shapely 2.1.2 polygon intersection in LAEA equal-area (metres) centred on the group centroid"
+      },
+      {
+        "a_id": "87d1506d-8fd8-44c5-849f-61631e968c1e",
+        "b_id": "742988bf-062b-4fe7-995d-8620f0ade85a",
+        "a_datetime": "2015-04-07T22:08:08+00:00",
+        "b_datetime": "2016-04-01T22:07:53+00:00",
+        "a_order_key": "RS2_OK151584_PK1387509_DK1352132_XF0W2_20150407_220808_HH_SLC",
+        "b_order_key": "RS2_OK151671_PK1389651_DK1354430_XF0W2_20160401_220753_HH_SLC",
+        "a_absolute_orbit": 38177,
+        "b_absolute_orbit": 43322,
+        "gap_days": 359,
+        "a_footprint_ha": 1668769.9,
+        "b_footprint_ha": 1668921.2,
+        "overlap_ha": 1667586.8,
+        "overlap_frac_of_min_footprint": 0.9993,
+        "overlap_frac_of_a": 0.9993,
+        "overlap_frac_of_b": 0.9992,
+        "method": "shapely 2.1.2 polygon intersection in LAEA equal-area (metres) centred on the group centroid"
+      }
+    ],
+    "selection_rationale": "Modern-SLC comparison series, same selection rules applied to the Extra-Fine SLC population. 32 acquisitions of RS2 XF0W2 / Extra Fine0, HH, ascending, relative orbit 104 over the central Amazon (Amazonas/Par\u00e1, Brazil) from 2013-09-08 to 2016-04-25 on a 24-day repeat cycle. First / middle / last dates give 480 d + 480 d (960 d total) baseline. For each date the frame whose centroid matches the series' modal footprint was taken, so the three scenes are the same ground swath at three epochs rather than adjacent frames from one pass. 5.2-5.5 GB per scene and 2.662 x 2.499 m sampled grid, so this is the heavier, higher-resolution option.",
+    "available_dates_in_group": [
+      "2013-09-08",
+      "2013-10-02",
+      "2013-10-26",
+      "2013-11-19",
+      "2013-12-13",
+      "2014-01-06",
+      "2014-04-12",
+      "2014-05-06",
+      "2014-05-30",
+      "2014-06-23",
+      "2014-08-10",
+      "2014-09-27",
+      "2014-10-21",
+      "2014-11-14",
+      "2014-12-08",
+      "2015-01-01",
+      "2015-01-25",
+      "2015-04-07",
+      "2015-05-01",
+      "2015-05-25",
+      "2015-06-18",
+      "2015-08-05",
+      "2015-08-29",
+      "2015-09-22",
+      "2015-10-16",
+      "2015-11-09",
+      "2015-12-03",
+      "2016-01-20",
+      "2016-02-13",
+      "2016-03-08",
+      "2016-04-01",
+      "2016-04-25"
+    ],
+    "available_dates_count": 32,
+    "frames_per_date": {
+      "2013-09-08": 2,
+      "2013-10-02": 2,
+      "2013-10-26": 2,
+      "2013-11-19": 3,
+      "2013-12-13": 3,
+      "2014-01-06": 3,
+      "2014-04-12": 6,
+      "2014-05-06": 6,
+      "2014-05-30": 6,
+      "2014-06-23": 8,
+      "2014-08-10": 3,
+      "2014-09-27": 6,
+      "2014-10-21": 6,
+      "2014-11-14": 6,
+      "2014-12-08": 4,
+      "2015-01-01": 5,
+      "2015-01-25": 1,
+      "2015-04-07": 6,
+      "2015-05-01": 4,
+      "2015-05-25": 4,
+      "2015-06-18": 5,
+      "2015-08-05": 1,
+      "2015-08-29": 4,
+      "2015-09-22": 4,
+      "2015-10-16": 5,
+      "2015-11-09": 3,
+      "2015-12-03": 6,
+      "2016-01-20": 6,
+      "2016-02-13": 6,
+      "2016-03-08": 5,
+      "2016-04-01": 6,
+      "2016-04-25": 6
+    },
+    "ground_swath_slot_centroid_lon_lat": [
+      -57.05,
+      -1.89
+    ],
+    "frame_selection_rule": "frames within a pass were clustered into ground swaths by polygon centroid; a single swath was kept and the three dates were chosen to maximise the temporal span subject to that swath existing on all three dates, >=300 d between epochs and non-empty polygon overlap. The naive earliest/middle/latest date choice put the middle date on a different swath with 0 ha overlap.",
+    "searched_date_triples": "over all 32 dates x 10 ground-swath slots present on >=3 dates",
+    "not_selected_note": "XF0W3 descending groups (rel-orbit 97/197/297/340) hold a 3.038-3.042 m sampled line spacing versus 2.498-2.500 m for XF0W2, so they are not mixed with XF0W2 in a single series."
+  },
+  "rejected_candidates": [
+    {
+      "key": [
+        "SLC",
+        "XF0W2",
+        "Extra Fine0",
+        "HH",
+        "ascending",
+        204
+      ],
+      "dates": 36,
+      "span_days": 983,
+      "centroid_lon_lat": [
+        -55.535,
+        -3.968
+      ],
+      "reason": "equally valid; 104 chosen for no better reason than identical attributes and a single-frame-per-date early segment. Usable as a substitute AOI."
+    },
+    {
+      "key": [
+        "SLC",
+        "XF0W2",
+        "Extra Fine0",
+        "HH",
+        "ascending",
+        304
+      ],
+      "dates": 28,
+      "span_days": 1007,
+      "centroid_lon_lat": [
+        -54.51,
+        -3.861
+      ],
+      "reason": "valid; marginally lower scene sizes (4196-4198 MB subset) but same 5 GB class."
+    },
+    {
+      "key": [
+        "SLC",
+        "XF0W3",
+        "Extra Fine0",
+        "HH",
+        "descending",
+        197
+      ],
+      "dates": 19,
+      "span_days": 744,
+      "reason": "different beam and 3.04 m line spacing; would break same-beam/same-grid comparability with XF0W2."
+    },
+    {
+      "key": [
+        "SGF",
+        "MF5W",
+        "Wide Multi-Look Fine5",
+        "HH",
+        "ascending",
+        240
+      ],
+      "dates": 1,
+      "span_days": 0,
+      "reason": "single date in the sampled legacy window, no time series."
+    },
+    {
+      "key": [
+        "SGF",
+        "W3",
+        "Wide3",
+        "VV VH",
+        "ascending",
+        98
+      ],
+      "dates": 9,
+      "span_days": 192,
+      "reason": "SELECTED as primary."
+    }
+  ],
+  "metadata_unknowns": [
+    "No calibrated radiometry, incidence angle, look direction, SNR, orbit phase, or calibration LUT id in the STAC properties: radiometric terrain correction and layover/shadow masking cannot be planned from metadata alone.",
+    "applied_lut is 'Land' for every SLC item and 'Constant-beta' for the legacy SGF/Fine items, but the STAC record does not state which calibration coefficients, speckle filter or multilooking were actually applied inside the zip.",
+    "sampled_pixel_spacing / sampled_line_spacing are the delivered GeoTIFF grid spacing, not sensor resolution; the true native resolution and the number of looks per pixel are not published in the item metadata.",
+    "No preview/backscatter asset in the STAC item beyond a browse thumbnail PNG; the thumbnail href is public but no pixel statistics are exposed, so radiometric comparability between dates is unverified.",
+    "product_format is GeoTIFF for both SGF and SLC here, but the zip layout, band naming (amplitude/real/imag), nodata and calibration files are undocumented in the metadata and only visible after an authenticated download.",
+    "Product availability on the server and the download path require a bearer token; ordering feasibility (cost, delivery time) is unverified because authentication was out of scope.",
+    "The 'HINT' name for applied_lut 'Constant-beta' (a dose-rate LUT for gamma-0) is not defined by CSA in this metadata.",
+    "Whether the 800-item central-Amazon bbox sample is the complete archive for that AOI is unknown: paging stopped at 800 items (2016-06-02) and the collection extent is open-ended from 2008-02-14."
+  ],
+  "no_change_event_asserted": "This is a scene-selection deliverable only. Polygon overlap proves the same ground is imaged on the listed dates; it does not prove any forest loss, gain or other real-world change between them. Detecting change requires ordering, radiometric calibration and pixel inspection, none of which was done here."
+}

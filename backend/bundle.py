@@ -103,12 +103,9 @@ def _load(bundle_dir: Path) -> BundleSnapshot:
     regions_document = _read_json(regions_path, REGIONS_FILENAME)
     validated = build_validated_bundle(analysis_document, regions_document, bundle_dir)
 
-    message = "Result bundle is available."
-    if validated.warnings:
-        message = f"Result bundle is available. {validated.warnings[0]}"
     return BundleSnapshot(
         state="ready",
-        message=message,
+        message="Result bundle is available.",
         analysis_id=str(validated.analysis["analysis_id"]),
         scene_count=validated.scene_count,
         bundle=validated,

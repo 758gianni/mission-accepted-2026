@@ -65,6 +65,9 @@ class MetricsResponse(BaseModel):
     total_changed_area_ha: float
     valid_area_ha: float
     not_evaluable_area_ha: float
+    analysis_area_ha: float = Field(
+        description="Total analysis extent: valid_area_ha + not_evaluable_area_ha."
+    )
     scene_count: int
 
 
@@ -111,7 +114,9 @@ class TimeSeriesPointResponse(BaseModel):
     valid_fraction: float
 
 
-class OnsetIntervalResponse(BaseModel):
+class ObservationIntervalResponse(BaseModel):
+    """Bracketing acquisitions, not an inferred physical onset."""
+
     start: str
     end: str
 
@@ -119,11 +124,21 @@ class OnsetIntervalResponse(BaseModel):
 class RegionPropertiesResponse(BaseModel):
     region_id: str
     area_ha: float
-    change_db: float = Field(description="Signed median change in dB.")
-    magnitude_db: float = Field(description="Median absolute change in dB.")
-    detected_at: str
-    last_observed_unchanged_at: str
-    onset_interval: OnsetIntervalResponse
+    change_db: float = Field(
+        description="Signed median of the per-pixel dB change within the region."
+    )
+    magnitude_db: float = Field(
+        description="Median of the absolute per-pixel dB change within the region. "
+        "A different statistic from change_db; the two need not agree."
+    )
+    detected_at: str = Field(
+        description="Acquisition at which a radar difference was first observed."
+    )
+    baseline_at: str = Field(description="Acquisition used as the baseline reference.")
+    observation_interval: ObservationIntervalResponse = Field(
+        description="Acquisition window the observation is bracketed by. "
+        "Two scenes cannot establish a physical onset time."
+    )
     priority_score: float
     priority_units: str
     priority_formula: str

@@ -19,9 +19,9 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 ANALYSIS_FILENAME = "analysis.json"
 REGIONS_FILENAME = "regions.geojson"
@@ -36,6 +36,12 @@ CHANGE_DEFINITION = "10*log10(after/before)"
 PRIORITY_UNITS = "dB sqrt(ha)"
 PRIORITY_FORMULA = "magnitude_db * sqrt(area_ha)"
 PERSISTENCE_STATUSES = frozenset({"not_evaluable", "observed"})
+
+#: Absolute tolerance for the area relations in ``analysis.metrics``, in
+#: hectares (0.01 ha = 100 m^2). Area arithmetic on rasterised regions
+#: accumulates small floating point error, so sums are compared with this
+#: tolerance instead of exact equality. Comparisons are *never* looser.
+AREA_TOLERANCE_HA = 0.01
 
 GEOMETRY_TYPES = frozenset({"Polygon", "MultiPolygon"})
 MINIMUM_SEPARATE_DATES = 2
@@ -81,7 +87,6 @@ class ValidatedBundle:
     region_index: Mapping[str, dict[str, Any]]
     demo_region_id: str | None
     scene_count: int
-    warnings: tuple[str, ...] = field(default=())
 
 
 # --------------------------------------------------------------------------
@@ -152,6 +157,11 @@ def _bounded_fraction(value: Any, label: str) -> float:
     if not 0.0 <= number <= 1.0:
         _fail(label, "must be between 0 and 1")
     return number
+
+
+def _areas_match(value: float, expected: float) -> bool:
+    """Compare two area totals with the documented absolute tolerance."""
+    return math.isclose(value, expected, rel_tol=1e-9, abs_tol=AREA_TOLERANCE_HA)
 
 
 def parse_utc_timestamp(value: Any, label: str) -> datetime:
@@ -289,10 +299,21 @@ def _metrics(value: Any, scene_count: int) -> dict[str, Any]:
     if region_count < 0:
         _fail(f"{label}.region_count", "must not be negative")
     _non_negative(_present(metrics, "total_changed_area_ha", label), f"{label}.total_changed_area_ha")
-    _non_negative(_present(metrics, "valid_area_ha", label), f"{label}.valid_area_ha")
-    _non_negative(
+    valid_area = _non_negative(
+        _present(metrics, "valid_area_ha", label), f"{label}.valid_area_ha"
+    )
+    not_evaluable_area = _non_negative(
         _present(metrics, "not_evaluable_area_ha", label), f"{label}.not_evaluable_area_ha"
     )
+    analysis_area = _non_negative(
+        _present(metrics, "analysis_area_ha", label), f"{label}.analysis_area_ha"
+    )
+    if not _areas_match(valid_area + not_evaluable_area, analysis_area):
+        _fail(
+            f"{label}.analysis_area_ha",
+            "must equal valid_area_ha + not_evaluable_area_ha within "
+            f"{AREA_TOLERANCE_HA} ha",
+        )
     declared_scene_count = _integer(
         _present(metrics, "scene_count", label), f"{label}.scene_count"
     )
@@ -327,7 +348,9 @@ def _imagery_entry(key: str, value: Any) -> tuple[str, tuple[float, float, float
     return path, bounds, text
 
 
-def _validate_analysis(document: Any) -> tuple[dict[str, Any], int, str | None, list[str]]:
+def _validate_analysis(
+    document: Any,
+) -> tuple[dict[str, Any], frozenset[datetime], str | None]:
     label = "analysis"
     analysis = _mapping(document, label)
     schema_version = _integer(_present(analysis, "schema_version", label), f"{label}.schema_version")
@@ -341,7 +364,7 @@ def _validate_analysis(document: Any) -> tuple[dict[str, Any], int, str | None, 
     dates = [
         _scene(scene, f"{label}.scenes[{index}]") for index, scene in enumerate(scenes)
     ]
-    distinct = {date.isoformat() for date in dates}
+    distinct = frozenset(dates)
     if len(distinct) < MINIMUM_SEPARATE_DATES:
         _fail(
             f"{label}.scenes",
@@ -367,7 +390,7 @@ def _validate_analysis(document: Any) -> tuple[dict[str, Any], int, str | None, 
     for index, item in enumerate(limitations):
         _text(item, f"{label}.limitations[{index}]")
 
-    return dict(analysis), len(scenes), demo_region_id, list(limitations)
+    return dict(analysis), distinct, demo_region_id
 
 
 # --------------------------------------------------------------------------
@@ -429,30 +452,47 @@ def _time_series(value: Any, label: str) -> None:
         )
 
 
-def _region_properties(value: Any, label: str) -> None:
+def _acquisition(
+    mapping: Mapping[str, Any], key: str, label: str, acquisitions: frozenset[datetime]
+) -> datetime:
+    """Read a timestamp that must name one of the bundle's acquisitions."""
+    field_label = f"{label}.{key}"
+    stamp = parse_utc_timestamp(_present(mapping, key, label), field_label)
+    if stamp not in acquisitions:
+        _fail(field_label, "must be the acquired_at time of a scene in analysis.scenes")
+    return stamp
+
+
+def _region_properties(
+    value: Any, label: str, acquisitions: frozenset[datetime]
+) -> None:
     properties = _mapping(value, label)
     _text(_present(properties, "region_id", label), f"{label}.region_id")
     _non_negative(_present(properties, "area_ha", label), f"{label}.area_ha")
     _number(_present(properties, "change_db", label), f"{label}.change_db")
     _non_negative(_present(properties, "magnitude_db", label), f"{label}.magnitude_db")
-    parse_utc_timestamp(
-        _present(properties, "detected_at", label), f"{label}.detected_at"
+
+    # Two scenes cannot establish stability or a physical onset time, so these
+    # fields describe *observations* only: which acquisition was used as the
+    # baseline, which acquisition first showed a radar difference, and the
+    # acquisition window in between.
+    detected_at = _acquisition(properties, "detected_at", label, acquisitions)
+    baseline_at = _acquisition(properties, "baseline_at", label, acquisitions)
+    if baseline_at >= detected_at:
+        _fail(f"{label}.baseline_at", "must precede detected_at")
+
+    interval_label = f"{label}.observation_interval"
+    interval = _mapping(
+        _present(properties, "observation_interval", label), interval_label
     )
-    parse_utc_timestamp(
-        _present(properties, "last_observed_unchanged_at", label),
-        f"{label}.last_observed_unchanged_at",
-    )
-    onset = _mapping(
-        _present(properties, "onset_interval", label), f"{label}.onset_interval"
-    )
-    start = parse_utc_timestamp(
-        _present(onset, "start", f"{label}.onset_interval"), f"{label}.onset_interval.start"
-    )
-    end = parse_utc_timestamp(
-        _present(onset, "end", f"{label}.onset_interval"), f"{label}.onset_interval.end"
-    )
+    if set(interval) != {"start", "end"}:
+        _fail(interval_label, "must declare exactly 'start' and 'end'")
+    start = _acquisition(interval, "start", interval_label, acquisitions)
+    end = _acquisition(interval, "end", interval_label, acquisitions)
     if end < start:
-        _fail(f"{label}.onset_interval", "end must not precede start")
+        _fail(interval_label, "end must not precede start")
+    if start > baseline_at or detected_at > end:
+        _fail(interval_label, "must bracket baseline_at and detected_at")
     _non_negative(_present(properties, "priority_score", label), f"{label}.priority_score")
     units = _text(_present(properties, "priority_units", label), f"{label}.priority_units")
     if units != PRIORITY_UNITS:
@@ -487,7 +527,9 @@ def _geometry(value: Any, label: str) -> None:
     _fail(f"{label}.type", "must be 'Polygon' or 'MultiPolygon'")
 
 
-def _validate_regions(document: Any) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+def _validate_regions(
+    document: Any, acquisitions: frozenset[datetime]
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     label = "regions"
     regions = _mapping(document, label)
     if _present(regions, "type", label) != "FeatureCollection":
@@ -508,7 +550,7 @@ def _validate_regions(document: Any) -> tuple[dict[str, Any], dict[str, dict[str
         properties = _mapping(
             _present(entry, "properties", feature_label), f"{feature_label}.properties"
         )
-        _region_properties(properties, f"{feature_label}.properties")
+        _region_properties(properties, f"{feature_label}.properties", acquisitions)
         if properties["region_id"] != feature_id:
             _fail(
                 f"{feature_label}.properties.region_id",
@@ -580,34 +622,59 @@ def resolve_imagery(
     return resolved
 
 
-def cross_check(analysis: dict[str, Any], regions: dict[str, Any],
-                index: Mapping[str, dict[str, Any]], imagery: Mapping[str, ImageryEntry],
-                demo_region_id: str | None) -> tuple[str, ...]:
-    """Validate consistency *across* the bundle files. Returns warnings."""
+def cross_check(
+    analysis: dict[str, Any],
+    regions: dict[str, Any],
+    index: Mapping[str, dict[str, Any]],
+    imagery: Mapping[str, ImageryEntry],
+    demo_region_id: str | None,
+) -> None:
+    """Validate consistency *across* the bundle files."""
     metrics = _mapping(analysis["metrics"], "analysis.metrics")
     if metrics["region_count"] != len(index):
-        _fail("analysis.metrics.region_count", "does not match the number of regions.geojson features")
-    if demo_region_id is not None and demo_region_id not in index:
-        _fail("analysis.demo_region_id", "does not match any region id in regions.geojson")
+        _fail(
+            "analysis.metrics.region_count",
+            "does not match the number of regions.geojson features",
+        )
     if len(regions["features"]) != len(index):
         _fail("regions.features", "contains duplicate region ids")
+    if demo_region_id is not None and demo_region_id not in index:
+        _fail("analysis.demo_region_id", "does not match any region id in regions.geojson")
 
-    warnings: list[str] = []
+    # The declared total changed area must account for the served regions.
+    region_area = 0.0
+    for region_id, feature in index.items():
+        region_area += float(_mapping(feature["properties"], "properties")["area_ha"])
+    changed = float(metrics["total_changed_area_ha"])
+    if not _areas_match(changed, region_area):
+        _fail(
+            "analysis.metrics.total_changed_area_ha",
+            f"must equal the sum of the regions.geojson area_ha values "
+            f"({region_area:.4f} ha) within {AREA_TOLERANCE_HA} ha",
+        )
+    valid_area = float(metrics["valid_area_ha"])
+    if changed > valid_area + AREA_TOLERANCE_HA:
+        _fail(
+            "analysis.metrics.total_changed_area_ha",
+            "must not exceed analysis.metrics.valid_area_ha",
+        )
+
+    # Previews are identically warped onto the analysis grid, so their bounds
+    # are the analysis extent. Anything else would misplace the overlay.
+    bbox = _bbox(analysis["bbox"], "analysis.bbox")
     for key in IMAGERY_KEYS:
         declared = _mapping(analysis["imagery"][key], f"analysis.imagery.{key}")
         bounds = _bbox(declared["bounds"], f"analysis.imagery.{key}.bounds")
-        if bounds != imagery[key].bounds:
-            _fail(f"analysis.imagery.{key}.bounds", "does not match the validated imagery entry")
-    bbox = _bbox(analysis["bbox"], "analysis.bbox")
-    for key in IMAGERY_KEYS:
-        west, south, east, north = imagery[key].bounds
-        if not (
-            west >= bbox[0] and south >= bbox[1] and east <= bbox[2] and north <= bbox[3]
-        ):
-            warnings.append(
-                f"imagery.{key}.bounds extends outside analysis.bbox; serving values as declared"
+        if bounds != bbox:
+            _fail(
+                f"analysis.imagery.{key}.bounds",
+                "must equal analysis.bbox (previews are identically warped)",
             )
-    return tuple(warnings)
+        if bounds != imagery[key].bounds:
+            _fail(
+                f"analysis.imagery.{key}.bounds",
+                "does not match the validated imagery entry",
+            )
 
 
 def build_validated_bundle(
@@ -616,23 +683,23 @@ def build_validated_bundle(
     bundle_dir,
 ) -> ValidatedBundle:
     """Validate both JSON documents plus the declared imagery on disk."""
-    analysis, scene_count, demo_region_id, _ = _validate_analysis(analysis_document)
-    regions, index = _validate_regions(regions_document)
+    analysis, acquisitions, demo_region_id = _validate_analysis(analysis_document)
+    regions, index = _validate_regions(regions_document, acquisitions)
     imagery = resolve_imagery(bundle_dir, _mapping(analysis["imagery"], "analysis.imagery"))
-    warnings = cross_check(analysis, regions, index, imagery, demo_region_id)
+    cross_check(analysis, regions, index, imagery, demo_region_id)
     return ValidatedBundle(
         analysis=analysis,
         regions=regions,
         imagery=imagery,
         region_index=index,
         demo_region_id=demo_region_id,
-        scene_count=scene_count,
-        warnings=warnings,
+        scene_count=len(analysis["scenes"]),
     )
 
 
 __all__ = [
     "ANALYSIS_FILENAME",
+    "AREA_TOLERANCE_HA",
     "BundleValidationError",
     "IMAGERY_KEYS",
     "ImageryEntry",

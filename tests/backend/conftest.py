@@ -10,12 +10,20 @@ from __future__ import annotations
 import copy
 import json
 import struct
+import sys
 import zlib
 from pathlib import Path
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+
+# Repository root on sys.path so the suite runs under any pytest configuration
+# (or none). Shared project configuration such as pyproject.toml is owned by
+# the team lead and is not modified here.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from backend.app import create_app
 
@@ -71,6 +79,7 @@ BASE_ANALYSIS: dict[str, Any] = {
         "total_changed_area_ha": 4.5,
         "valid_area_ha": 100.0,
         "not_evaluable_area_ha": 2.0,
+        "analysis_area_ha": 102.0,
         "scene_count": 2,
     },
     "imagery": {
@@ -120,8 +129,8 @@ BASE_REGIONS: dict[str, Any] = {
                 "change_db": -2.75,
                 "magnitude_db": 2.75,
                 "detected_at": "2026-03-20T10:00:00Z",
-                "last_observed_unchanged_at": "2026-01-15T10:00:00Z",
-                "onset_interval": {
+                "baseline_at": "2026-01-15T10:00:00Z",
+                "observation_interval": {
                     "start": "2026-01-15T10:00:00Z",
                     "end": "2026-03-20T10:00:00Z",
                 },
@@ -187,8 +196,8 @@ BASE_REGIONS: dict[str, Any] = {
                 "change_db": -1.5,
                 "magnitude_db": 1.5,
                 "detected_at": "2026-03-20T10:00:00Z",
-                "last_observed_unchanged_at": "2026-01-15T10:00:00Z",
-                "onset_interval": {
+                "baseline_at": "2026-01-15T10:00:00Z",
+                "observation_interval": {
                     "start": "2026-01-15T10:00:00Z",
                     "end": "2026-03-20T10:00:00Z",
                 },

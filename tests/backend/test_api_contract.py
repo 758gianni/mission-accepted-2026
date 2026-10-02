@@ -367,3 +367,58 @@ def test_json_content_sniffing_not_required(client: TestClient) -> None:
     response = client.get("/api/regions/synthetic-region-1")
     assert response.headers["content-type"].startswith("application/json")
     json.loads(response.text)
+
+
+# ---------------------------------------------------------------------------
+# adjudicated contract: analysis_area_ha, baseline_at, observation_interval
+# ---------------------------------------------------------------------------
+
+
+def test_analysis_metrics_include_analysis_area(client: TestClient) -> None:
+    metrics = client.get("/api/analysis").json()["metrics"]
+    assert metrics["analysis_area_ha"] == 102.0
+    assert (
+        metrics["valid_area_ha"] + metrics["not_evaluable_area_ha"]
+        == metrics["analysis_area_ha"]
+    )
+    assert metrics["total_changed_area_ha"] <= metrics["valid_area_ha"]
+
+
+def test_region_uses_baseline_at_and_observation_interval(client: TestClient) -> None:
+    properties = client.get("/api/regions/synthetic-region-1").json()["properties"]
+    assert "last_observed_unchanged_at" not in properties
+    assert "onset_interval" not in properties
+    assert properties["baseline_at"] == "2026-01-15T10:00:00Z"
+    assert properties["observation_interval"] == {
+        "start": "2026-01-15T10:00:00Z",
+        "end": "2026-03-20T10:00:00Z",
+    }
+    assert properties["detected_at"] == "2026-03-20T10:00:00Z"
+
+
+def test_change_db_and_magnitude_db_are_distinct_fields(client: TestClient) -> None:
+    properties = client.get("/api/regions/synthetic-region-1").json()["properties"]
+    assert properties["change_db"] == -2.75
+    assert properties["magnitude_db"] == 2.75
+
+
+def test_imagery_bounds_equal_analysis_bbox(client: TestClient) -> None:
+    analysis = client.get("/api/analysis").json()
+    for entry in analysis["imagery"].values():
+        assert entry["bounds"] == analysis["bbox"]
+
+
+def test_no_stability_or_onset_language_in_responses(client: TestClient) -> None:
+    body = client.get("/api/regions").text + client.get("/api/analysis").text
+    for phrase in ("last_observed_unchanged", "onset_interval", "stable_since"):
+        assert phrase not in body
+
+
+def test_openapi_documents_analysis_area_and_new_region_fields(client: TestClient) -> None:
+    components = client.get("/openapi.json").json()["components"]["schemas"]
+    assert "analysis_area_ha" in components["MetricsResponse"]["properties"]
+    region = components["RegionPropertiesResponse"]["properties"]
+    assert "baseline_at" in region
+    assert "observation_interval" in region
+    assert "last_observed_unchanged_at" not in region
+    assert "onset_interval" not in region

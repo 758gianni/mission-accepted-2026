@@ -124,6 +124,7 @@ The validated analysis document, served verbatim. The only addition is a
     "total_changed_area_ha": 0.0,
     "valid_area_ha": 0.0,
     "not_evaluable_area_ha": 0.0,
+    "analysis_area_ha": 0.0,
     "scene_count": 2
   },
   "imagery": {
@@ -143,10 +144,23 @@ A WGS84 `FeatureCollection`, served verbatim. Feature order follows
 
 - `id` (identical to `properties.region_id`)
 - `geometry`: `Polygon` or `MultiPolygon`
-- `properties.area_ha`, `change_db` (signed median dB), `magnitude_db`
-  (median absolute dB)
-- `properties.detected_at`, `last_observed_unchanged_at`,
-  `onset_interval.{start,end}` (ISO 8601 UTC)
+- `properties.area_ha`
+- `properties.change_db` — the **signed median** of the per-pixel dB change
+  inside the region
+- `properties.magnitude_db` — the **median of the absolute** per-pixel dB change
+  inside the region
+
+  These are two different statistics. `median(|x|)` is not `|median(x)|`, so the
+  two fields are independent and need not agree. Both are served exactly as the
+  analysis produced them; the API never reconciles or derives one from the other.
+- `properties.detected_at` — the **acquisition at which a radar difference was
+  first observed** (an observation time, not a change time)
+- `properties.baseline_at` — the acquisition used as the baseline reference
+- `properties.observation_interval.{start,end}` — the acquisition window the
+  observation is bracketed by. It is **not** an onset interval: two scenes
+  cannot establish when a change physically began, and nothing in this API
+  claims they can. All three timestamps are ISO 8601 UTC and must each name the
+  `acquired_at` time of a scene in `analysis.scenes`.
 - `properties.priority_score` with `priority_units` (`dB sqrt(ha)`) and
   `priority_formula` (`magnitude_db * sqrt(area_ha)`)
 - `properties.persistence.{status,observations_after_detection,changed_observations,rate}`
@@ -175,6 +189,11 @@ are read from the bundle file declared by the analysis document, served as
 `image/png`. Only declared, contained, regular (non-symlink) PNG files are ever
 read; there is no directory listing and no static mount.
 
+The three previews are identically warped onto the analysis grid, so each
+`imagery.<key>.bounds` must be **exactly equal** to `analysis.bbox`. A mismatch
+is a validation error, not a warning: otherwise the frontend overlay would be
+georeferenced to the wrong extent.
+
 ### Errors
 
 All error bodies are `{"detail": "<human readable message>"}`. Messages describe
@@ -201,6 +220,10 @@ as `error` / `503` rather than served partially.
   `change`, each with exactly `path`, `bounds`, `label`.
 - `feature.id == properties.region_id`; region ids are unique.
 - `metrics.region_count == len(features)` and `metrics.scene_count == len(scenes)`.
+- `metrics.analysis_area_ha` is required and equals
+  `valid_area_ha + not_evaluable_area_ha` (see the area tolerance below).
+- `metrics.total_changed_area_ha` equals the sum of the `area_ha` values in
+  `regions.geojson`, and is not greater than `valid_area_ha`.
 - `demo_region_id` is `null` or an existing region id.
 - `method.quantity` is `sigma0` or `gamma0`; `units == "dB"`;
   `change_definition == "10*log10(after/before)"`.
@@ -221,10 +244,38 @@ as `error` / `503` rather than served partially.
   `"observed"` status requires a rate. `historical_anomaly` must be present
   (may be `null`).
 
+**Observation semantics**
+
+- `baseline_at`, `detected_at`, `observation_interval.start` and
+  `observation_interval.end` must each be the `acquired_at` time of a scene in
+  `analysis.scenes` (compared as instants, so `...Z` and `...+00:00` are
+  equivalent). This keeps the reported times tied to real acquisitions instead
+  of inferred dates.
+- `baseline_at < detected_at`, and `observation_interval` brackets both:
+  `start <= baseline_at` and `detected_at <= end`.
+- There is deliberately no field claiming stability or an onset time. Two scenes
+  cannot support either claim.
+
+**Areas and the floating tolerance**
+
+Area relations are compared with `math.isclose(rel_tol=1e-9, abs_tol=0.01)`,
+i.e. an absolute tolerance of **0.01 ha (100 m²)**, because rasterised region
+areas accumulate small floating point error. The tolerance is applied to:
+
+- `valid_area_ha + not_evaluable_area_ha` vs `analysis_area_ha`
+- `total_changed_area_ha` vs `sum(region.area_ha)`
+
+and the comparison is never loosened beyond 0.01 ha. The
+`total_changed_area_ha <= valid_area_ha` bound allows the same 0.01 ha slack so
+float noise cannot fail a physically exact result. Nothing else is rounded or
+adjusted; every served number is the one the analysis declared.
+
 **Geometry**
 
 - `bbox` is `[west, south, east, north]` with `west < east`, `south < north`,
   longitude in `[-180, 180]`, latitude in `[-90, 90]`; imagery bounds likewise.
+- Each `imagery.<key>.bounds` must equal `analysis.bbox` exactly. The previews
+  are identically warped, so any other extent is an error.
 - Polygon rings have at least four positions, are closed, and every position is
   a numeric `[lon, lat]` pair inside the WGS84 ranges. `MultiPolygon` is
   supported; other geometry types are rejected.
@@ -254,15 +305,34 @@ as `error` / `503` rather than served partially.
 7. Treat `null` metrics as unavailable: render "not assessed" and never `0`.
 8. `analysis.bbox` and every `bounds` array is `[west, south, east, north]` in
    WGS84 (EPSG:4326) — map libraries usually want the same order, but check.
-9. `analysis.limitations` and each `properties.explanation` are provided for
-   display as-is; do not synthesise additional claims.
+   Each `imagery.<key>.bounds` equals `analysis.bbox`, so the preview `<img>` and
+   the map extent can be registered from the same numbers.
+9. Label the per-region times as observations, not events: `baseline_at` is the
+   baseline acquisition, `detected_at` is the acquisition where the radar
+   difference was first seen, and `observation_interval` is the acquisition
+   window it sits in. Do not label them "date of change" or "onset", and do not
+   infer a change date between them.
+10. Display `change_db` and `magnitude_db` as two separate statistics (signed
+    median vs median of absolute values). Do not derive one from the other, and
+    do not assume `magnitude_db == abs(change_db)`.
+11. `analysis.metrics.analysis_area_ha` is the total analysis extent; report
+    `valid_area_ha` and `not_evaluable_area_ha` as a breakdown of it rather than
+    as separate totals.
+12. `analysis.limitations` and each `properties.explanation` are provided for
+    display as-is; do not synthesise additional claims.
 
 ## Tests
 
 ```bash
-python -m pytest
+python -m pytest tests/backend
 ```
 
 Tests live in `tests/backend/` and use synthetic fixtures written to pytest
 `tmp_path` directories only. No synthetic data exists outside `tests/`, and no
 complete prepared raster inputs exist in the repository yet.
+
+The suite is configuration-free: `tests/backend/conftest.py` puts the repository
+root on `sys.path` itself, so it runs under any pytest configuration the team
+leads add later (including none). `tests/backend/conftest.py` is also where the
+synthetic fixture documents live, so the contract in this document and the
+fixtures cannot drift apart unnoticed.

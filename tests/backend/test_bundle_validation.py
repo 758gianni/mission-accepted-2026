@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 from typing import Any, Callable
 
-import pytest
 from fastapi.testclient import TestClient
 
 from backend.app import create_app
@@ -414,3 +413,194 @@ def test_recovery_after_bundle_becomes_valid(tmp_path: Path) -> None:
     (bundle / "analysis.json").write_text(json.dumps(analysis_document()))
     assert client.get("/api/status").json()["state"] == "ready"
     assert client.get("/api/analysis").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# analysis_area_ha
+# ---------------------------------------------------------------------------
+
+
+def test_analysis_area_ha_is_required(tmp_path: Path) -> None:
+    assert_error_state(
+        _client_for(tmp_path, mutate(lambda d: d["metrics"].pop("analysis_area_ha")))
+    )
+
+
+def test_analysis_area_ha_must_equal_valid_plus_not_evaluable(tmp_path: Path) -> None:
+    assert_error_state(
+        _client_for(tmp_path, mutate(lambda d: d["metrics"].update(analysis_area_ha=999.0)))
+    )
+    assert_error_state(
+        _client_for(tmp_path, mutate(lambda d: d["metrics"].update(analysis_area_ha=-1.0)))
+    )
+
+
+def test_analysis_area_ha_allows_documented_tolerance(tmp_path: Path) -> None:
+    # 0.009 ha is inside the 0.01 ha tolerance and must be accepted.
+    document = mutate(lambda d: d["metrics"].update(analysis_area_ha=102.009))
+    bundle = write_bundle(tmp_path, analysis=document)
+    assert TestClient(create_app(bundle_dir=bundle)).get("/api/status").json()["state"] == "ready"
+
+
+def test_analysis_area_ha_beyond_tolerance_rejected(tmp_path: Path) -> None:
+    assert_error_state(
+        _client_for(tmp_path, mutate(lambda d: d["metrics"].update(analysis_area_ha=102.02)))
+    )
+
+
+def test_total_changed_area_must_equal_sum_of_regions(tmp_path: Path) -> None:
+    # The two fixture regions total 1.25 + 3.25 = 4.5 ha.
+    assert_error_state(
+        _client_for(tmp_path, mutate(lambda d: d["metrics"].update(total_changed_area_ha=5.0)))
+    )
+
+
+def test_total_changed_area_tolerates_rounding_in_region_sum(tmp_path: Path) -> None:
+    document = mutate(lambda d: d["metrics"].update(total_changed_area_ha=4.505))
+    bundle = write_bundle(tmp_path, analysis=document)
+    assert TestClient(create_app(bundle_dir=bundle)).get("/api/status").json()["state"] == "ready"
+
+
+def test_total_changed_area_must_not_exceed_valid_area(tmp_path: Path) -> None:
+    def shrink(d: dict[str, Any]) -> None:
+        d["metrics"].update(valid_area_ha=4.0, not_evaluable_area_ha=98.0, analysis_area_ha=102.0)
+
+    assert_error_state(_client_for(tmp_path, mutate(shrink)))
+
+
+def test_total_changed_area_at_valid_area_boundary_is_accepted(tmp_path: Path) -> None:
+    def shrink(d: dict[str, Any]) -> None:
+        d["metrics"].update(valid_area_ha=4.5, not_evaluable_area_ha=97.5, analysis_area_ha=102.0)
+
+    bundle = write_bundle(tmp_path, analysis=mutate(shrink))
+    assert TestClient(create_app(bundle_dir=bundle)).get("/api/status").json()["state"] == "ready"
+
+
+# ---------------------------------------------------------------------------
+# imagery bounds must equal analysis.bbox
+# ---------------------------------------------------------------------------
+
+
+def test_imagery_bounds_must_equal_analysis_bbox(tmp_path: Path) -> None:
+    def shrink(d: dict[str, Any]) -> None:
+        d["imagery"]["change"].update(bounds=[-60.4, -3.4, -60.3, -3.3])
+
+    assert_error_state(_client_for(tmp_path, mutate(shrink)))
+
+
+def test_all_three_imagery_bounds_must_equal_analysis_bbox(tmp_path: Path) -> None:
+    for key in ("before", "after", "change"):
+        def shift(d: dict[str, Any], key: str = key) -> None:
+            west, south, east, north = d["bbox"]
+            d["imagery"][key].update(bounds=[west + 0.01, south, east, north])
+
+        assert_error_state(_client_for(tmp_path, mutate(shift))), key
+
+
+# ---------------------------------------------------------------------------
+# baseline_at / observation_interval semantics
+# ---------------------------------------------------------------------------
+
+
+def test_baseline_at_is_required(tmp_path: Path) -> None:
+    regions = regions_document()
+    del regions["features"][0]["properties"]["baseline_at"]
+    assert_error_state(_client_for(tmp_path, None, regions))
+
+
+def test_legacy_last_observed_unchanged_at_is_rejected(tmp_path: Path) -> None:
+    regions = regions_document()
+    props = regions["features"][0]["properties"]
+    props["last_observed_unchanged_at"] = props.pop("baseline_at")
+    assert_error_state(_client_for(tmp_path, None, regions))
+
+
+def test_observation_interval_is_required(tmp_path: Path) -> None:
+    regions = regions_document()
+    del regions["features"][0]["properties"]["observation_interval"]
+    assert_error_state(_client_for(tmp_path, None, regions))
+
+
+def test_legacy_onset_interval_is_rejected(tmp_path: Path) -> None:
+    regions = regions_document()
+    props = regions["features"][0]["properties"]
+    props["onset_interval"] = props.pop("observation_interval")
+    assert_error_state(_client_for(tmp_path, None, regions))
+
+
+def test_baseline_at_must_precede_detected_at(tmp_path: Path) -> None:
+    regions = regions_document()
+    regions["features"][0]["properties"]["baseline_at"] = "2026-03-20T10:00:00Z"
+    assert_error_state(_client_for(tmp_path, None, regions))
+
+
+def test_baseline_at_must_be_a_scene_acquisition(tmp_path: Path) -> None:
+    regions = regions_document()
+    regions["features"][0]["properties"]["baseline_at"] = "2026-02-01T10:00:00Z"
+    assert_error_state(_client_for(tmp_path, None, regions))
+
+
+def test_detected_at_must_be_a_scene_acquisition(tmp_path: Path) -> None:
+    regions = regions_document()
+    regions["features"][0]["properties"]["detected_at"] = "2026-03-21T10:00:00Z"
+    assert_error_state(_client_for(tmp_path, None, regions))
+
+
+def test_observation_interval_bounds_must_be_scene_acquisitions(tmp_path: Path) -> None:
+    for key in ("start", "end"):
+        regions = regions_document()
+        regions["features"][0]["properties"]["observation_interval"][key] = "2026-06-01T10:00:00Z"
+        assert_error_state(_client_for(tmp_path, None, regions)), key
+
+
+def test_observation_interval_must_contain_the_observations(tmp_path: Path) -> None:
+    regions = regions_document()
+    interval = regions["features"][0]["properties"]["observation_interval"]
+    interval["end"] = "2026-01-15T10:00:00Z"
+    assert_error_state(_client_for(tmp_path, None, regions))
+
+
+def test_acquisition_times_must_be_utc(tmp_path: Path) -> None:
+    regions = regions_document()
+    regions["features"][0]["properties"]["baseline_at"] = "2026-01-15T12:00:00+02:00"
+    assert_error_state(_client_for(tmp_path, None, regions))
+
+
+def test_equal_offset_spelling_of_a_scene_time_is_accepted(tmp_path: Path) -> None:
+    regions = regions_document()
+    regions["features"][0]["properties"]["baseline_at"] = "2026-01-15T10:00:00+00:00"
+    bundle = write_bundle(tmp_path, regions=regions)
+    assert TestClient(create_app(bundle_dir=bundle)).get("/api/status").json()["state"] == "ready"
+
+
+# ---------------------------------------------------------------------------
+# change_db vs magnitude_db are different statistics
+# ---------------------------------------------------------------------------
+
+
+def test_magnitude_and_signed_median_are_served_independently(tmp_path: Path) -> None:
+    regions = regions_document()
+    props = regions["features"][0]["properties"]
+    # median(|dB|) is not |median(dB)|; both are valid and are not reconciled.
+    props["change_db"] = -1.0
+    props["magnitude_db"] = 3.0
+    bundle = write_bundle(tmp_path, regions=regions)
+    client = TestClient(create_app(bundle_dir=bundle))
+    assert client.get("/api/status").json()["state"] == "ready"
+    served = client.get("/api/regions/synthetic-region-1").json()["properties"]
+    assert served["change_db"] == -1.0
+    assert served["magnitude_db"] == 3.0
+
+
+def test_magnitude_db_must_not_be_negative(tmp_path: Path) -> None:
+    regions = regions_document()
+    regions["features"][0]["properties"]["magnitude_db"] = -2.0
+    assert_error_state(_client_for(tmp_path, None, regions))
+
+
+def test_positive_and_negative_changes_both_valid(tmp_path: Path) -> None:
+    regions = regions_document()
+    regions["features"][0]["properties"]["change_db"] = 2.5
+    regions["features"][0]["properties"]["magnitude_db"] = 2.5
+    bundle = write_bundle(tmp_path, regions=regions)
+    assert TestClient(create_app(bundle_dir=bundle)).get("/api/status").json()["state"] == "ready"

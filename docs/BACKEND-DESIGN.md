@@ -6,7 +6,7 @@ Build a reproducible backend that turns comparable RADARSAT-2 acquisitions into 
 
 The opening slides require RADARSAT-2 Tropical Forests as a core source and a visual Value-Added Product. The presentation, including the demo, lasts five minutes. A reliable prepared result matters more than additional architecture.
 
-The repository currently contains the slides and `.gitignore`. No local RADARSAT-2 product was found. Public EODMS STAC discovery works without authentication; product downloads declare bearer authentication. The collection is `Radarsat-2_Tropical_Forest_Products`. Catalog inspection found both older SGF and SLC products. Modern examples include XF0W2 SLC scenes larger than 5 GB. Catalog footprint CRS and sampled spacing do not establish a raster's projection or spatial resolution.
+The repository contains the slides, `.gitignore`, and the teammates' developing frontend. No local RADARSAT-2 product was found. Public EODMS STAC discovery works without authentication; product downloads declare bearer authentication. The collection is `Radarsat-2_Tropical_Forest_Products`. Catalog inspection found both older SGF and SLC products. Modern examples include XF0W2 SLC scenes larger than 5 GB. Catalog footprint CRS and sampled spacing do not establish a raster's projection or spatial resolution.
 
 Source endpoints:
 
@@ -44,6 +44,10 @@ Storage: `data/raw/` for acquisitions, `data/reports/` for inspection and diagno
 8. Rank candidates with `magnitude_db * sqrt(area_ha)`, in `dB sqrt(ha)`. This orders review work; it is not a probability. Evaluate any persistence or historical components only after sufficient data exists.
 
 Two acquisitions support an observed difference and its observation interval. They do not establish persistence, exact event onset, or historical anomaly. Such metrics remain null with an explicit unavailable state. Use neutral explanations such as "anomalous radar change". Cause attribution needs supporting evidence.
+
+Region dates use `baseline_at`, `detected_at`, and `observation_interval`. The detection date is the acquisition when a difference is observed, not the date its physical cause occurred. `magnitude_db` is the median absolute pixel change; `change_db` is the signed median. Their absolute values need not match. Area accounting reconciles the analysis footprint with jointly valid and unevaluable observations, and the retained region sum with total changed area.
+
+SLC is already focused. Additional processing depends on the actual acquisition mode and delivered representation; range/azimuth compression or debursting is not a universal requirement. Driver calibration support must be checked for the delivered product. A calibration label in catalog metadata alone is insufficient evidence that a raster already contains calibrated linear power.
 
 Water, terrain, moisture, seasonality, acquisition geometry, and registration remain potential explanations. Display processing and validation limitations. Do not report false-alarm rates without reference data that supports measuring them.
 

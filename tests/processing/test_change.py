@@ -33,6 +33,7 @@ from processing.change import (  # noqa: E402
     ChangeError,
     MIN_VALID_NEIGHBOURS,
     nodata_mean_filter,
+    region_change_statistics,
     run_change_detection,
     signed_change_db,
 )
@@ -800,17 +801,27 @@ def test_analysis_json_matches_contract_v1(pair):
     assert isinstance(method["preprocessing"], list) and method["preprocessing"]
     assert any("not measure or correct" in step for step in method["preprocessing"])
     metrics = analysis["metrics"]
+    assert set(metrics) == {
+        "region_count",
+        "total_changed_area_ha",
+        "analysis_area_ha",
+        "valid_area_ha",
+        "not_evaluable_area_ha",
+        "scene_count",
+    }
     assert metrics["scene_count"] == 2
     assert isinstance(metrics["region_count"], int)
     assert metrics["total_changed_area_ha"] == pytest.approx(
         geojson["features"][0]["properties"]["area_ha"], rel=1e-9
     )
+    assert metrics["analysis_area_ha"] > 0.0
     assert metrics["valid_area_ha"] > 0.0
     assert metrics["not_evaluable_area_ha"] >= 0.0
     for key in ("before", "after", "change"):
         entry = analysis["imagery"][key]
         assert entry["path"] == f"{key}.png"
         assert len(entry["bounds"]) == 4
+        assert entry["bounds"] == analysis["bbox"], "every preview shares the analysis bbox"
         assert isinstance(entry["label"], str) and entry["label"]
         assert os.path.isfile(os.path.join(out_dir, entry["path"]))
     assert analysis["demo_region_id"] is None
@@ -836,8 +847,8 @@ def test_geojson_feature_properties_match_contract_v1(pair):
             "change_db",
             "magnitude_db",
             "detected_at",
-            "last_observed_unchanged_at",
-            "onset_interval",
+            "baseline_at",
+            "observation_interval",
             "priority_score",
             "priority_units",
             "priority_formula",
@@ -852,11 +863,14 @@ def test_geojson_feature_properties_match_contract_v1(pair):
         assert properties["area_ha"] > 0
         assert properties["magnitude_db"] == pytest.approx(abs(properties["change_db"]), rel=1e-6)
         assert properties["detected_at"] == analysis["scenes"][1]["acquired_at"]
-        assert properties["last_observed_unchanged_at"] == analysis["scenes"][0]["acquired_at"]
-        assert properties["onset_interval"] == {
+        assert properties["baseline_at"] == analysis["scenes"][0]["acquired_at"]
+        assert properties["observation_interval"] == {
             "start": analysis["scenes"][0]["acquired_at"],
             "end": analysis["scenes"][1]["acquired_at"],
         }
+        # v1 renamed these fields; the old names must not reappear
+        assert "last_observed_unchanged_at" not in properties
+        assert "onset_interval" not in properties
         persistence = properties["persistence"]
         assert persistence["status"] == "not_evaluable"
         assert persistence["rate"] is None
@@ -865,6 +879,9 @@ def test_geojson_feature_properties_match_contract_v1(pair):
         assert properties["historical_anomaly"] is None
         assert isinstance(properties["explanation"], str) and properties["explanation"]
         assert "cause" in properties["explanation"].lower()
+        # detected_at is an observation time, and the wording must not claim an onset
+        assert "onset" not in properties["explanation"].lower()
+        assert "not when any event began" in properties["explanation"]
         assert len(properties["time_series"]) == 2
         baseline_point, followup_point = properties["time_series"]
         assert baseline_point["acquired_at"] == analysis["scenes"][0]["acquired_at"]
@@ -923,6 +940,116 @@ def test_failed_run_publishes_nothing(tmp_path):
     with pytest.raises(ChangeError):
         run_change_detection(manifest, out_dir, 0.0, 0.0)
     assert not os.path.exists(out_dir) or os.listdir(out_dir) == []
+
+
+def test_metrics_partition_the_analysis_area(pair):
+    analysis, _, geojson, _ = run_pair(pair)
+    metrics = analysis["metrics"]
+    assert metrics["valid_area_ha"] + metrics["not_evaluable_area_ha"] == pytest.approx(
+        metrics["analysis_area_ha"], rel=1e-9
+    )
+    assert metrics["analysis_area_ha"] == pytest.approx(42 * 42 * PIXEL_SIZE * PIXEL_SIZE / 10_000.0, rel=0.01)
+    assert metrics["valid_area_ha"] < metrics["analysis_area_ha"]
+    assert metrics["total_changed_area_ha"] <= metrics["valid_area_ha"]
+    assert metrics["total_changed_area_ha"] == pytest.approx(
+        sum(feature["properties"]["area_ha"] for feature in geojson["features"]), rel=1e-9
+    )
+    assert any("detected_at is the acquisition" in item for item in analysis["limitations"])
+
+
+def test_area_partition_holds_when_everything_is_evaluable(tmp_path):
+    before = stable_grid()
+    after = stable_grid()
+    after[5:9, 5:9] = BASE_PRICE * PATCH_RATIO
+    before_path = write_raster(tmp_path / "b.tif", before)
+    after_path = write_raster(tmp_path / "a.tif", after)
+    manifest = write_manifest(
+        tmp_path / "m.json",
+        scene(before_path, scene_id="A", acquired_at=BASELINE_ACQUIRED),
+        scene(after_path, scene_id="B", acquired_at=FOLLOWUP_ACQUIRED),
+    )
+    analysis = run_change_detection(manifest, str(tmp_path / "out"), 2.0, 0.0)
+    metrics = analysis["metrics"]
+    # the small patch sits inside the valid area, so the identity still holds exactly
+    assert metrics["valid_area_ha"] + metrics["not_evaluable_area_ha"] == pytest.approx(
+        metrics["analysis_area_ha"], rel=1e-9
+    )
+    assert metrics["total_changed_area_ha"] <= metrics["valid_area_ha"]
+
+
+def _mixed_sign_change(positive, negative):
+    """One row of change values: `positive` cells at +3.0103 dB, `negative` cells at -3.0103 dB."""
+    change = np.full((3, positive + negative + 1), np.nan)
+    change[0, :positive] = EXPECTED_DB
+    change[0, positive : positive + negative] = -EXPECTED_DB
+    component = np.zeros(change.shape, dtype=bool)
+    component[0, : positive + negative] = True
+    return change, component
+
+
+def test_signed_median_and_absolute_median_are_distinct_metrics():
+    # a balanced region: the signed median is ~0 dB while the median absolute dB stays at the
+    # 2x power value, so the two metrics are genuinely different quantities
+    change, component = _mixed_sign_change(5, 5)
+    signed, magnitude = region_change_statistics(change, component)
+    assert signed == pytest.approx(0.0, abs=1e-9)
+    assert magnitude == pytest.approx(EXPECTED_DB)
+    assert magnitude != signed
+
+    # an unbalanced region keeps its dominant sign in the signed median while the absolute
+    # median is unchanged
+    change, component = _mixed_sign_change(9, 6)
+    signed_unbalanced, magnitude_unbalanced = region_change_statistics(change, component)
+    assert signed_unbalanced == pytest.approx(EXPECTED_DB)
+    assert magnitude_unbalanced == pytest.approx(EXPECTED_DB)
+
+    # a single-sign region has change_db == magnitude_db, and neither is the mean
+    change, component = _mixed_sign_change(15, 0)
+    signed_uniform, magnitude_uniform = region_change_statistics(change, component)
+    assert signed_uniform == pytest.approx(magnitude_uniform)
+    assert signed_uniform == pytest.approx(EXPECTED_DB)
+
+    # nodata cells inside the region geometry are ignored, not counted as 0 dB
+    change, component = _mixed_sign_change(9, 6)
+    change[0, :2] = np.nan  # leaves 7 positive and 6 negative cells
+    signed_nodata, magnitude_nodata = region_change_statistics(change, component)
+    assert signed_nodata == pytest.approx(EXPECTED_DB)
+    assert magnitude_nodata == pytest.approx(EXPECTED_DB)
+
+    with pytest.raises(ChangeError, match="no finite change values"):
+        region_change_statistics(change, np.zeros(change.shape, dtype=bool))
+
+
+def test_mixed_sign_region_keeps_signs_in_separate_components(tmp_path):
+    # brightening and darkening halves are separated by the kernel's ~0 dB seam, so they stay
+    # two components, each reporting its own signed median and a shared absolute median
+    after = stable_grid()
+    after[14:26, 10:19] = BASE_PRICE * PATCH_RATIO
+    after[14:26, 19:28] = BASE_PRICE / PATCH_RATIO
+    before_path = write_raster(tmp_path / "b.tif", stable_grid())
+    after_path = write_raster(tmp_path / "a.tif", after)
+    manifest = write_manifest(
+        tmp_path / "m.json",
+        scene(before_path, scene_id="A", acquired_at=BASELINE_ACQUIRED),
+        scene(after_path, scene_id="B", acquired_at=FOLLOWUP_ACQUIRED),
+    )
+    out_dir = str(tmp_path / "out")
+    analysis = run_change_detection(manifest, out_dir, 2.0, 0.0)
+    with open(os.path.join(out_dir, "regions.geojson"), "r", encoding="utf-8") as handle:
+        features = json.load(handle)["features"]
+    assert len(features) == 2
+    by_id = {feature["id"]: feature["properties"] for feature in features}
+    assert by_id["R001"]["change_db"] == pytest.approx(EXPECTED_DB, abs=1e-6)
+    assert by_id["R002"]["change_db"] == pytest.approx(-EXPECTED_DB, abs=1e-6)
+    for properties in by_id.values():
+        assert properties["magnitude_db"] == pytest.approx(EXPECTED_DB, abs=1e-6)
+        assert properties["magnitude_db"] == pytest.approx(abs(properties["change_db"]), abs=1e-6)
+        assert properties["priority_score"] == pytest.approx(
+            properties["magnitude_db"] * math.sqrt(properties["area_ha"]), rel=1e-9
+        )
+    assert analysis["metrics"]["total_changed_area_ha"] == pytest.approx(
+        sum(properties["area_ha"] for properties in by_id.values()), rel=1e-9
+    )
 
 
 # --------------------------------------------------------------------------- #

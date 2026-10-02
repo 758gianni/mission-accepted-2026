@@ -59,7 +59,7 @@ from shapely.geometry import box, mapping, shape
 from shapely.ops import transform as shapely_transform, unary_union
 from shapely.validation import make_valid
 
-__all__ = ["ChangeError", "run_change_detection", "main"]
+__all__ = ["ChangeError", "run_change_detection", "main", "region_change_statistics"]
 
 MANIFEST_SCHEMA_VERSION = 1
 ANALYSIS_SCHEMA_VERSION = 1
@@ -504,6 +504,15 @@ def nodata_mean_filter(raster: np.ndarray, min_valid: int = MIN_VALID_NEIGHBOURS
     return filtered
 
 
+def region_change_statistics(change_db: np.ndarray, component: np.ndarray) -> Tuple[float, float]:
+    """Signed median dB and median absolute dB over one region's pixels, as two distinct metrics."""
+    values = change_db[component]
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        raise ChangeError("region contains no finite change values; cannot report change_db/magnitude_db")
+    return float(np.median(values)), float(np.median(np.abs(values)))
+
+
 def signed_change_db(before: np.ndarray, after: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """Signed 10*log10(after/before) plus the evaluable (both scenes valid) mask."""
     evaluable = np.isfinite(before) & np.isfinite(after) & (before > 0) & (after > 0)
@@ -680,6 +689,37 @@ def _write_png(path: str, rgba: np.ndarray) -> None:
 # --------------------------------------------------------------------------- #
 # main pipeline
 # --------------------------------------------------------------------------- #
+def _partition_areas(analysis_area_ha: float, valid_area_ha: float) -> Tuple[float, float]:
+    """Return (not_evaluable_area_ha, valid_area_ha) so the two sum to analysis_area_ha."""
+    _require(
+        math.isfinite(analysis_area_ha) and analysis_area_ha > 0,
+        "the analysis extent has zero or non-finite area; cannot report area metrics",
+    )
+    _require(
+        math.isfinite(valid_area_ha) and valid_area_ha >= 0,
+        "the evaluable area is not finite; cannot report area metrics",
+    )
+    tolerance = 1e-6 * analysis_area_ha
+    _require(
+        valid_area_ha <= analysis_area_ha + tolerance,
+        f"evaluable area ({valid_area_ha:.6f} ha) exceeds the analysis area "
+        f"({analysis_area_ha:.6f} ha); the area partition would be inconsistent",
+    )
+    valid = min(valid_area_ha, analysis_area_ha)
+    return analysis_area_ha - valid, valid
+
+
+def _clamp_changed_area(total_changed_area_ha: float, valid_area_ha: float) -> float:
+    """Retained regions cannot cover more than the evaluable area they were measured on."""
+    tolerance = 1e-6 * max(valid_area_ha, 1.0)
+    _require(
+        total_changed_area_ha <= valid_area_ha + tolerance,
+        f"retained region area ({total_changed_area_ha:.6f} ha) exceeds the evaluable area "
+        f"({valid_area_ha:.6f} ha); the metrics would be inconsistent",
+    )
+    return min(total_changed_area_ha, valid_area_ha)
+
+
 def _analysis_id(scenes: Sequence[Dict[str, Any]], threshold_db: float, min_area_ha: float) -> str:
     payload = json.dumps(
         {
@@ -777,12 +817,7 @@ def run_change_detection(
         area_ha = _geodesic_area_ha(geometry, grid["crs"])
         if area_ha < area and area > 0:
             continue
-        component_db = change_db[component]
-        component_db = component_db[np.isfinite(component_db)]
-        if component_db.size == 0:
-            continue
-        change_median = float(np.median(component_db))
-        magnitude_median = float(np.median(np.abs(component_db)))
+        change_median, magnitude_median = region_change_statistics(change_db, component)
         candidates.append(
             {
                 "geometry": geometry,
@@ -813,6 +848,7 @@ def run_change_detection(
 
     baseline_iso = baseline["acquired_at_iso"]
     followup_iso = followup["acquired_at_iso"]
+    # detected_at is the acquisition in which the radar difference was observed, not an event onset
     detected_at = followup_iso
     features = []
     for candidate, base_stats, after_stats in zip(candidates, time_series_cache, followup_cache):
@@ -828,8 +864,9 @@ def run_change_detection(
             "difference thresholded at "
             f"{threshold:.2f} dB. The cause of the change is not determined: two acquisitions "
             "cannot separate deforestation, flood, fire, agriculture, or processing artifacts, and "
-            "no ground validation is included. The detection time is the later acquisition, not a "
-            "physical onset date."
+            "no ground validation is included. The change was observed at the later acquisition "
+            f"({followup_iso}); that is when the radar difference is measured, not when any event "
+            "began. The event, if any, occurred at an unknown time inside the observation interval."
         )
         features.append(
             {
@@ -842,8 +879,8 @@ def run_change_detection(
                     "change_db": candidate["change_db"],
                     "magnitude_db": candidate["magnitude_db"],
                     "detected_at": detected_at,
-                    "last_observed_unchanged_at": baseline_iso,
-                    "onset_interval": {"start": baseline_iso, "end": followup_iso},
+                    "baseline_at": baseline_iso,
+                    "observation_interval": {"start": baseline_iso, "end": followup_iso},
                     "priority_score": candidate["priority_score"],
                     "priority_units": "dB sqrt(ha)",
                     "priority_formula": "magnitude_db * sqrt(area_ha)",
@@ -882,7 +919,7 @@ def run_change_detection(
         grid["bounds"][3],
         densify_pts=21,
     )
-    extent_area_ha = _geodesic_area_ha(
+    analysis_area_ha = _geodesic_area_ha(
         unary_union(
             [
                 polygonise_region(
@@ -901,8 +938,11 @@ def run_change_detection(
         ),
         grid["crs"],
     )
-    not_evaluable_area_ha = max(0.0, extent_area_ha - valid_area_ha)
+    # contract invariant: valid_area_ha + not_evaluable_area_ha == analysis_area_ha
+    not_evaluable_area_ha, valid_area_ha = _partition_areas(analysis_area_ha, valid_area_ha)
     total_changed_area_ha = float(sum(candidate["area_ha"] for candidate in candidates))
+    # contract invariant: retained regions cannot cover more than the evaluable area
+    total_changed_area_ha = _clamp_changed_area(total_changed_area_ha, valid_area_ha)
 
     preview = _preview_grid(grid, grid_wgs84)
     before_db_preview = _warp_preview(np.where(np.isfinite(baseline_filtered), np.log10(baseline_filtered) * 10.0, np.nan), grid, preview)
@@ -969,6 +1009,7 @@ def run_change_detection(
         "metrics": {
             "region_count": len(features),
             "total_changed_area_ha": total_changed_area_ha,
+            "analysis_area_ha": analysis_area_ha,
             "valid_area_ha": valid_area_ha,
             "not_evaluable_area_ha": not_evaluable_area_ha,
             "scene_count": len(scenes),
@@ -1002,6 +1043,8 @@ def run_change_detection(
             "the cause of change is undetermined and no ground validation is available.",
             "Only two acquisitions are available, so temporal persistence after detection and "
             "historical anomaly are not evaluable and are reported as not_evaluable / null.",
+            "detected_at is the acquisition in which the radar difference was observed, not the onset "
+            "of any event; the event time, if any, is unknown inside observation_interval.",
             "Radiometric change can arise from geometry, terrain, incidence angle, processing, and "
             "speckle effects as well as surface change; magnitudes are not calibrated as loss severity.",
             f"Scene backscatter previews are stretched to the 2nd-98th percentile of valid dB samples "
@@ -1065,8 +1108,33 @@ def _validate_bundle(staging: str) -> None:
         analysis = json.load(handle)
     with open(os.path.join(staging, "regions.geojson"), "r", encoding="utf-8") as handle:
         geojson = json.load(handle)
-    if analysis.get("metrics", {}).get("region_count") != len(geojson.get("features", [])):
+    metrics = analysis.get("metrics", {})
+    if metrics.get("region_count") != len(geojson.get("features", [])):
         raise ChangeError("staged bundle is inconsistent: region_count does not match regions.geojson")
+    bbox = analysis.get("bbox")
+    if not isinstance(bbox, list) or len(bbox) != 4:
+        raise ChangeError("staged bundle is inconsistent: bbox must be [west, south, east, north]")
+    for key in ("before", "after", "change"):
+        entry = analysis.get("imagery", {}).get(key, {})
+        if entry.get("bounds") != bbox:
+            raise ChangeError(
+                f"staged bundle is inconsistent: imagery.{key}.bounds must equal analysis bbox"
+            )
+        if entry.get("path") != f"{key}.png":
+            raise ChangeError(f"staged bundle is inconsistent: imagery.{key}.path is not {key}.png")
+    required_metrics = (
+        "region_count",
+        "total_changed_area_ha",
+        "analysis_area_ha",
+        "valid_area_ha",
+        "not_evaluable_area_ha",
+        "scene_count",
+    )
+    for key in required_metrics:
+        if key not in metrics:
+            raise ChangeError(f"staged bundle is inconsistent: metrics.{key} is missing")
+    _partition_areas(float(metrics["analysis_area_ha"]), float(metrics["valid_area_ha"]))
+    _clamp_changed_area(float(metrics["total_changed_area_ha"]), float(metrics["valid_area_ha"]))
     for feature in geojson.get("features", []):
         if feature.get("id") != feature.get("properties", {}).get("region_id"):
             raise ChangeError("staged bundle is inconsistent: feature id and region_id disagree")
@@ -1149,7 +1217,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         f"wrote {analysis['analysis_id']} to {os.path.abspath(args.out)}: "
         f"{metrics['region_count']} region(s), "
         f"{metrics['total_changed_area_ha']:.2f} ha changed, "
-        f"{metrics['valid_area_ha']:.2f} ha evaluable, "
+        f"{metrics['valid_area_ha']:.2f} ha evaluable of {metrics['analysis_area_ha']:.2f} ha analysis area, "
         f"{metrics['not_evaluable_area_ha']:.2f} ha not evaluable"
     )
     return 0

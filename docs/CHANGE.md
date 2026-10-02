@@ -125,6 +125,19 @@ Both scenes must also agree on `quantity`, `polarization`, `beam_mode`,
 `orbit_direction`, and on `relative_orbit` when both are known (a `null`
 `relative_orbit` is accepted, since an unknown orbit is not a mismatch).
 
+## Preprocessing is decided by the actual acquisition mode
+
+This CLI has **no generic SLC compression or deburst step**. An SLC is already
+focused, and what a scene needs before it can be differenced depends on the
+mode the product was actually acquired in: multilooking or resolution
+adaptation for a GRD-like product, coregistration bookkeeping for an SLC pair,
+terrain correction where the geometry requires it, and nothing at all when the
+prepared product is already fit for comparison. `radiometry.processing_steps`
+records what was actually done upstream for these two scenes, and this CLI
+consumes the result rather than assuming a fixed chain. Adding a mode-specific
+step here would mean inventing evidence about the inputs, which is exactly what
+the provenance rules below forbid.
+
 ## Method
 
 1. **Common reference grid.** The two footprints are intersected in WGS84, the
@@ -185,7 +198,7 @@ grid larger than 40,000,000 cells all abort before anything is published.
 `before.png`, `after.png`, and `change.png` are produced by warping each raster
 onto a **WGS84 pixel grid** and recording that grid's bounds in
 `analysis.imagery.*.bounds` (identical for all three, and identical to
-`analysis.bbox`). A projected rectangular extent is never passed off as image
+`analysis.bbox`; the staged bundle is rejected if they differ). A projected rectangular extent is never passed off as image
 pixels in degrees. Nodata is fully transparent; before/after use a 2nd-98th
 percentile dB stretch whose range is recorded in `limitations`; the change
 preview is clipped at the 98th percentile of detected |dB| (never below the
@@ -227,8 +240,8 @@ no bundle and no staging directory behind; consumers that require
     "preprocessing": ["..."]
   },
   "metrics": {
-    "region_count": 0, "total_changed_area_ha": 0.0, "valid_area_ha": 0.0,
-    "not_evaluable_area_ha": 0.0, "scene_count": 2
+    "region_count": 0, "total_changed_area_ha": 0.0, "analysis_area_ha": 0.0,
+    "valid_area_ha": 0.0, "not_evaluable_area_ha": 0.0, "scene_count": 2
   },
   "imagery": {
     "before": {"path": "before.png", "bounds": [w, s, e, n], "label": "..."},
@@ -248,18 +261,51 @@ no bundle and no staging directory behind; consumers that require
 | `area_ha` | geodesic area of the thresholded pixels, holes subtracted |
 | `change_db` | **signed** median dB over the region |
 | `magnitude_db` | median **absolute** dB over the region |
-| `detected_at` | the later acquisition's timestamp |
-| `last_observed_unchanged_at` | the baseline acquisition's timestamp |
-| `onset_interval` | `{start: baseline, end: after}` — the observation interval |
+| `detected_at` | the later acquisition's timestamp — when the radar difference was **observed** |
+| `baseline_at` | the baseline acquisition's timestamp |
+| `observation_interval` | `{start: baseline_at, end: detected_at}` — the interval that was observed |
 | `priority_score`, `priority_units`, `priority_formula` | `magnitude_db * sqrt(area_ha)`, `"dB sqrt(ha)"` |
 | `persistence` | `{"status": "not_evaluable", "observations_after_detection": 0, "changed_observations": 0, "rate": null}` |
 | `historical_anomaly` | `null` |
 | `explanation` | plain-language summary, including that the cause is undetermined |
 | `time_series` | one entry per scene: `acquired_at`, `mean_backscatter_db`, `change_from_baseline_db`, `valid_fraction` |
 
-`detected_at` is the later acquisition, **not** a physical onset date. The
-earliest a change could have happened is somewhere inside
-`onset_interval`; that is exactly what the interval expresses.
+`detected_at` is the acquisition in which the radar backscatter difference was
+**observed**, not the onset of any event. A change could have begun at any time
+inside `observation_interval`, including long before `detected_at`; two dates
+cannot bound it any tighter. The region `explanation` says so explicitly, and
+`analysis.limitations` repeats it.
+
+`change_db` (signed median dB) and `magnitude_db` (median **absolute** dB) are
+two distinct metrics, both valid. They coincide only for single-sign regions: a
+region containing both brightening and darkening pixels keeps its dominant sign
+in `change_db` while `magnitude_db` stays at the median absolute value, and
+`priority_score` is built from `magnitude_db`, never from `change_db`.
+
+### Area metrics partition the analysis extent
+
+```jsonc
+"metrics": {
+  "region_count": 1,
+  "total_changed_area_ha": 12.61,
+  "analysis_area_ha": 158.76,   // geodesic area of the common reference grid
+  "valid_area_ha": 143.75,       // evaluable in both scenes after filtering
+  "not_evaluable_area_ha": 15.13, // analysis_area_ha - valid_area_ha
+  "scene_count": 2
+}
+```
+
+The API enforces these invariants, so the bundle satisfies them by construction:
+
+* `valid_area_ha + not_evaluable_area_ha == analysis_area_ha` (geodesic areas on
+  the same WGS84 ellipsoid, computed on the same reference grid; only float
+  noise is clamped);
+* `total_changed_area_ha == sum(region.area_ha)` over the retained regions;
+* `total_changed_area_ha <= valid_area_ha`, because regions are subsets of the
+  evaluable area.
+
+A violation is treated as a processing error rather than published, and the
+same checks are re-run against the staged bundle before it is moved into place.
 
 ## Two dates: what is unavailable, and what must not be faked
 
@@ -293,10 +339,12 @@ Every run records its own `limitations` array, which always includes at least:
    forest-loss polygons, and the cause of change is undetermined with no ground
    validation;
 4. with two acquisitions, persistence and historical anomaly are not evaluable;
-5. radiometric change can also arise from geometry, terrain, incidence angle,
+5. `detected_at` is when the radar difference was observed, not when an event
+   began; the event time, if any, is unknown inside `observation_interval`;
+6. radiometric change can also arise from geometry, terrain, incidence angle,
    and processing effects, so magnitudes are not loss severity;
-6. the before/after preview stretch range is not an absolute radiometric scale;
-7. the minimum area filter uses mean geodesic cell area, so the retained set can
+7. the before/after preview stretch range is not an absolute radiometric scale;
+8. the minimum area filter uses mean geodesic cell area, so the retained set can
    differ marginally from an exact per-cell area filter.
 
 ## Tests
@@ -314,8 +362,12 @@ amplitude rasters, complex rasters, missing CRS, degenerate transforms,
 incompatible pairs, wrong scene counts, duplicate dates, unsorted scenes, failed
 registration, bad schema versions, wrong source collections, non-overlapping
 footprints, and nonpositive/nonfinite parameters; finite-only numeric output;
-real WGS84 preview bounds shared by all three PNGs; contract v1 field-by-field
-consistency including `not_evaluable` persistence, `null` anomaly, `null`
-`demo_region_id`, absence of confidence/cause fields, and stable region
+real WGS84 preview bounds shared by all three PNGs and equal to `analysis.bbox`;
+contract v1 field-by-field consistency including `baseline_at` /
+`observation_interval` (and the absence of the pre-rename names), `not_evaluable`
+persistence, `null` anomaly, `null` `demo_region_id`, absence of
+confidence/cause fields, the `valid_area_ha + not_evaluable_area_ha ==
+analysis_area_ha` partition with `total_changed_area_ha <= valid_area_ha`, signed
+median versus median absolute dB as distinct metrics, and stable region
 ids/order across runs; atomic publishing with nothing left behind on failure;
 and the CLI's success, error, and argument handling.

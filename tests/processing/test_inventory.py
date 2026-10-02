@@ -374,7 +374,16 @@ def test_raster_metadata_is_reported(tmp_path):
     assert raster["dtypes"] == ["float32", "float32"]
     assert raster["nodata"] == 0.0
     assert raster["transform"] == pytest.approx([400000.0, 10.0, 0.0, 5200000.0, 0.0, -10.0])
-    assert raster["pixel_spacing"] == {"x": 10.0, "y": 10.0}
+    assert raster["pixel_spacing"] == {
+        "column": 10.0,
+        "row": 10.0,
+        "x": 10.0,
+        "y": 10.0,
+    }
+    assert raster["pixel_step_vectors"] == {"column": [10.0, 0.0], "row": [0.0, -10.0]}
+    assert raster["rotation_degrees"] == pytest.approx(0.0)
+    assert raster["georeferencing"]["source"] == "affine"
+    assert raster["georeferencing"]["gdal_placeholder_warning"] is False
     assert raster["crs_units"] == "metre"
     assert raster["error"] is None
     assert raster["transform_order"] == "gdal (c, a, b, f, d, e)"
@@ -402,13 +411,19 @@ def test_raster_without_crs_does_not_get_an_invented_crs(tmp_path):
         dst.write(np.zeros((1, 4, 5), dtype="uint8"))
 
     report = inventory.scan(data_dir)
-    raster = report["scenes"][0]["rasters"][0]
+    scene = report["scenes"][0]
+    raster = scene["rasters"][0]
     assert raster["crs"] is None
     assert raster["epsg"] is None
-    assert "raster[imagery.tif].crs" in report["scenes"][0]["missing"]
-    assert "DEM source not decided for this project" in (
-        report["scenes"][0]["preprocessing"]["unknowns"]
-    )
+    assert "raster[imagery.tif].crs" in scene["missing"]
+    # GDAL returns an identity placeholder for an ungeoreferenced raster; that
+    # placeholder must not be reported as a real transform or 1x1 spacing.
+    assert raster["transform"] is None
+    assert raster["pixel_spacing"] is None
+    assert raster["georeferencing"]["source"] == "none"
+    assert "raster[imagery.tif].transform" in scene["missing"]
+    assert "raster[imagery.tif].pixel_spacing" in scene["missing"]
+    assert "DEM source not decided for this project" in (scene["preprocessing"]["unknowns"])
 
 
 @needs_rasterio
@@ -465,6 +480,13 @@ def test_gdal_gcp_and_tiepoint_metadata_is_counted(tmp_path):
         {"row": 0.0, "col": 0.0, "x": 400000.0, "y": 5200000.0, "z": 0.0},
         {"row": 1.0, "col": 1.0, "x": 400010.0, "y": 5199990.0, "z": 0.0},
     ]
+    # A GCP-only raster has no affine georeferencing: GDAL returns identity by
+    # convention, which must not be reported as a real transform.
+    assert raster["transform"] is None
+    assert raster["pixel_spacing"] is None
+    assert raster["georeferencing"]["source"] == "gcp"
+    assert raster["georeferencing"]["gcp_count"] == 2
+    assert "raster[imagery.tif].transform" in scene["missing"]
     # rasterio does not expose GDAL tie points; that is stated, not invented.
     assert raster["tiepoint_count"] is None
     assert "not exposed by rasterio" in raster["tiepoint_source"]
@@ -503,6 +525,465 @@ def test_unreadable_raster_is_reported_without_aborting_scan(tmp_path):
     raster = report["scenes"][0]["rasters"][0]
     assert raster["error"] is not None
     assert raster["crs"] is None
+
+
+# ---------------------------------------------------------------------------
+# georeferencing honesty, strict JSON, rotated/sheared spacing
+# ---------------------------------------------------------------------------
+
+
+@needs_rasterio
+def test_declared_identity_geotransform_is_not_rejected_blindly(tmp_path):
+    """An explicitly declared identity geotransform is kept, but flagged.
+
+    GDAL emits ``NotGeoreferencedWarning`` ("the identity matrix will be
+    returned") when it substitutes a placeholder. A file that declares identity
+    does not trigger that, so it must be reported as-is instead of nulled.
+    """
+    import warnings
+
+    import numpy as np
+    import rasterio
+    from rasterio.transform import Affine
+
+    data_dir = tmp_path / "raw"
+    scene_dir = data_dir / "RS2_IDENTITY"
+    _write_product(scene_dir / "product.xml", PLAIN_PRODUCT_XML)
+    path = scene_dir / "imagery.tif"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with rasterio.open(
+            path,
+            "w",
+            driver="GTiff",
+            height=4,
+            width=4,
+            count=1,
+            dtype="uint8",
+            crs=rasterio.crs.CRS.from_epsg(4326),
+            transform=Affine.identity(),
+        ) as dst:
+            dst.write(np.zeros((1, 4, 4), dtype="uint8"))
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with rasterio.open(path) as handle:
+            reported = tuple(handle.transform)[:6]
+    assert not [w for w in caught if "identity matrix" in str(w.message)], [
+        str(w.message) for w in caught
+    ]
+    assert reported == (1.0, 0.0, 0.0, 0.0, 1.0, 0.0)
+
+    raster = inventory.scan(data_dir)["scenes"][0]["rasters"][0]
+    # GDAL ordering (c, a, b, f, d, e) of Affine.identity()
+    assert raster["transform"] == [0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+    assert raster["georeferencing"]["gdal_placeholder_warning"] is False
+    assert raster["georeferencing"]["source"] == "affine"
+    assert raster["georeferencing"]["identity_transform"] is True
+    assert raster["pixel_spacing"] == {
+        "column": 1.0,
+        "row": 1.0,
+        "x": 1.0,
+        "y": 1.0,
+    }
+
+
+@needs_rasterio
+def test_missing_georeferencing_detected_from_metadata_without_the_warning(tmp_path, monkeypatch):
+    """A silent driver must still be caught by the metadata cross-check."""
+    import warnings
+
+    import numpy as np
+    import rasterio
+
+    data_dir = tmp_path / "raw"
+    scene_dir = data_dir / "RS2_SILENT"
+    _write_product(scene_dir / "product.xml", PLAIN_PRODUCT_XML)
+    path = scene_dir / "imagery.tif"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with rasterio.open(
+            path, "w", driver="GTiff", height=3, width=3, count=1, dtype="uint8"
+        ) as dst:
+            dst.write(np.zeros((1, 3, 3), dtype="uint8"))
+
+    monkeypatch.setattr(inventory, "_is_gdal_placeholder_warning", lambda caught: False)
+    raster = inventory.scan(data_dir)["scenes"][0]["rasters"][0]
+    assert raster["georeferencing"]["gdal_placeholder_warning"] is False
+    assert raster["georeferencing"]["source"] == "none"
+    assert raster["transform"] is None
+    assert raster["pixel_spacing"] is None
+
+
+@needs_rasterio
+def test_rotated_transform_uses_column_and_row_step_lengths(tmp_path):
+    """For Affine(a,b,c,d,e,f) the column step is (a,d) and the row step is (b,e)."""
+    import math
+
+    import numpy as np
+    import rasterio
+
+    data_dir = tmp_path / "raw"
+    scene_dir = data_dir / "RS2_ROTATED"
+    _write_product(scene_dir / "product.xml", PLAIN_PRODUCT_XML)
+    path = scene_dir / "imagery.tif"
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=5,
+        width=5,
+        count=1,
+        dtype="float32",
+        crs=rasterio.crs.CRS.from_epsg(32633),
+        transform=rasterio.Affine(a=3.0, b=4.0, c=100.0, d=12.0, e=-5.0, f=200.0),
+    ) as dst:
+        dst.write(np.zeros((1, 5, 5), dtype="float32"))
+
+    raster = inventory.scan(data_dir)["scenes"][0]["rasters"][0]
+    assert raster["transform"] == pytest.approx([100.0, 3.0, 4.0, 200.0, 12.0, -5.0])
+    assert raster["pixel_step_vectors"] == {"column": [3.0, 12.0], "row": [4.0, -5.0]}
+    assert raster["pixel_spacing"]["column"] == pytest.approx(math.hypot(3.0, 12.0))
+    assert raster["pixel_spacing"]["row"] == pytest.approx(math.hypot(4.0, 5.0))
+    assert raster["pixel_spacing"]["x"] == pytest.approx(math.hypot(3.0, 12.0))
+    assert raster["pixel_spacing"]["y"] == pytest.approx(math.hypot(4.0, 5.0))
+    assert raster["rotation_degrees"] == pytest.approx(math.degrees(math.atan2(12.0, 3.0)))
+    # The old abs-diagonal behaviour is the bug being regressed against.
+    assert raster["pixel_spacing"]["column"] != pytest.approx(3.0)
+    assert raster["pixel_spacing"]["row"] != pytest.approx(5.0)
+
+
+@needs_rasterio
+def test_sheared_transform_uses_column_and_row_step_lengths(tmp_path):
+    import math
+
+    import numpy as np
+    import rasterio
+
+    data_dir = tmp_path / "raw"
+    scene_dir = data_dir / "RS2_SHEARED"
+    _write_product(scene_dir / "product.xml", PLAIN_PRODUCT_XML)
+    path = scene_dir / "imagery.tif"
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=5,
+        width=5,
+        count=1,
+        dtype="float32",
+        crs=rasterio.crs.CRS.from_epsg(32633),
+        transform=rasterio.Affine(a=10.0, b=3.0, c=0.0, d=1.0, e=-20.0, f=0.0),
+    ) as dst:
+        dst.write(np.zeros((1, 5, 5), dtype="float32"))
+
+    raster = inventory.scan(data_dir)["scenes"][0]["rasters"][0]
+    assert raster["pixel_step_vectors"] == {"column": [10.0, 1.0], "row": [3.0, -20.0]}
+    assert raster["pixel_spacing"]["column"] == pytest.approx(math.hypot(10.0, 1.0))
+    assert raster["pixel_spacing"]["row"] == pytest.approx(math.hypot(3.0, 20.0))
+
+
+@needs_rasterio
+@pytest.mark.parametrize(
+    ("nodata", "kind"),
+    [
+        (float("nan"), "nan"),
+        (float("inf"), "posinf"),
+        (float("-inf"), "neginf"),
+        (-9999.0, "value"),
+    ],
+)
+def test_nonfinite_nodata_is_encoded_explicitly(tmp_path, nodata, kind):
+    import numpy as np
+    import rasterio
+    from rasterio.transform import from_origin
+
+    data_dir = tmp_path / "raw"
+    scene_dir = data_dir / kind
+    _write_product(scene_dir / "product.xml", PLAIN_PRODUCT_XML)
+    path = scene_dir / "imagery.tif"
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=2,
+        width=2,
+        count=1,
+        dtype="float32",
+        crs=rasterio.crs.CRS.from_epsg(32633),
+        transform=from_origin(0.0, 0.0, 1.0, 1.0),
+        nodata=nodata,
+    ) as dst:
+        dst.write(np.zeros((1, 2, 2), dtype="float32"))
+
+    report = inventory.scan(data_dir)
+    raster = report["scenes"][0]["rasters"][0]
+    assert raster["nodata_kind"] == kind
+    if kind == "value":
+        assert raster["nodata"] == -9999.0
+    else:
+        assert raster["nodata"] is None, "nonfinite nodata must not leak into JSON"
+    # The whole report must survive strict serialisation.
+    text = json.dumps(report, allow_nan=False)
+    assert "NaN" not in text and "Infinity" not in text
+
+
+def test_nonfinite_values_are_replaced_in_reports_without_rasterio(tmp_path, monkeypatch):
+    import processing.inventory as inv
+
+    monkeypatch.setattr(inv, "rasterio", None)
+    data_dir = tmp_path / "raw"
+    _write_product(data_dir / "SCENE" / "product.xml", PLAIN_PRODUCT_XML)
+    report = inventory.scan(data_dir)
+    # Degenerate timestamps produce None, and nothing non-finite may remain.
+    report["scene_count"] = float("nan")
+    report["scenes"][0]["acquisition"]["duration_seconds"] = float("inf")
+    safe = inventory.json_safe(report)
+    assert safe["scene_count"] is None
+    assert safe["scenes"][0]["acquisition"]["duration_seconds"] is None
+    json.dumps(safe, allow_nan=False)
+
+
+@needs_rasterio
+def test_cli_json_output_is_strict_for_nan_nodata(tmp_path):
+    import numpy as np
+    import rasterio
+    from rasterio.transform import from_origin
+
+    data_dir = tmp_path / "raw"
+    scene_dir = data_dir / "SCENE"
+    _write_product(scene_dir / "product.xml", PLAIN_PRODUCT_XML)
+    with rasterio.open(
+        scene_dir / "imagery.tif",
+        "w",
+        driver="GTiff",
+        height=2,
+        width=2,
+        count=1,
+        dtype="float32",
+        crs=rasterio.crs.CRS.from_epsg(32633),
+        transform=from_origin(0.0, 0.0, 1.0, 1.0),
+        nodata=float("nan"),
+    ) as dst:
+        dst.write(np.zeros((1, 2, 2), dtype="float32"))
+
+    out = tmp_path / "reports" / "inventory.json"
+    result = _run_cli(str(data_dir), "--out", str(out), cwd=REPO_ROOT)
+    assert result.returncode == 0, result.stderr
+    text = out.read_text(encoding="utf-8")
+    assert "NaN" not in text and "Infinity" not in text
+    parsed = json.loads(text)
+    assert parsed["scenes"][0]["rasters"][0]["nodata"] is None
+    assert parsed["scenes"][0]["rasters"][0]["nodata_kind"] == "nan"
+
+    def _reject(value):
+        raise AssertionError(f"non-strict JSON token: {value}")
+
+    json.loads(text, parse_constant=_reject)
+
+
+# ---------------------------------------------------------------------------
+# authentic GDAL RS2 product.xml (official autotest fixture, vendored verbatim)
+# ---------------------------------------------------------------------------
+
+# Verbatim copy of the official GDAL RS2 driver autotest fixture:
+#   https://github.com/OSGeo/gdal/blob/master/autotest/gdrivers/data/rs2/product.xml
+#   blob sha256 of the fetched copy: see provenance recorded in docs/INVENTORY.md
+# Element names below are the ones GDAL's RS2 driver (frmts/rs2/rs2dataset.cpp)
+# actually reads: product.sourceAttributes.{satellite,sensor,beamModeMnemonic,
+# rawDataStartTime}, product.imageGenerationParameters.generalProcessingInformation
+# .productType, product.imageAttributes.rasterAttributes.{dataType,bitsPerSample,
+# numberOfSamplesPerLine,numberOfLines,sampledPixelSpacing,sampledLineSpacing},
+# product.imageAttributes.geographicInformation.geolocationGrid.imageTiePoint,
+# product.imageAttributes.lookupTable[@incidenceAngleCorrection] and
+# product.imageAttributes.fullResolutionImageData[@pole].
+# The file itself states: "Completely artificially (and certainly not spec
+# complying) RS2 product.xml" - it is GDAL's synthetic test data, not a real
+# acquisition, so no field value here may be treated as a real observation.
+# Byte-for-byte copy of the official GDAL RS2 driver autotest fixture, fetched from
+#   https://raw.githubusercontent.com/OSGeo/gdal/master/autotest/gdrivers/data/rs2/product.xml
+# sha256 892b1ea2bfdd12e46549e336dad6f08f5ced1ca6393c26daa3196084afe6028a (asserted below so upstream drift is detectable).
+# The file itself says: "Completely artificially (and certainly not spec complying)
+# RS2 product.xml" - it is GDAL's synthetic driver test data, so no value in it is a
+# real observation. The element names it exercises are the ones GDAL's RS2 driver
+# (frmts/rs2/rs2dataset.cpp) reads; see docs/INVENTORY.md for the full mapping.
+GDAL_RS2_PRODUCT_XML = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Completely artificially (and certainly not spec complying) RS2 product.xml -->
+<product xmlns="http://foo.bar/rs2">
+    <sourceAttributes>
+        <satellite>SATELLITE</satellite>
+        <sensor>SENSOR</sensor>
+        <beamModeMnemonic>BEAM_MODE_MNEMONIC</beamModeMnemonic>
+        <rawDataStartTime>2009-03-13T00:00:00Z</rawDataStartTime>
+    </sourceAttributes>
+    <imageGenerationParameters>
+        <generalProcessingInformation>
+            <productType>PRODUCT_TYPE</productType>
+        </generalProcessingInformation>
+        <sarProcessingInformation>
+            <incidenceAngleNearRange>10</incidenceAngleNearRange>
+            <incidenceAngleFarRange>20</incidenceAngleFarRange>
+            <slantRangeNearEdge>30</slantRangeNearEdge>
+        </sarProcessingInformation>
+    </imageGenerationParameters>
+    <imageAttributes>
+        <rasterAttributes>
+            <dataType>Mag</dataType>
+            <bitsPerSample>8</bitsPerSample>
+            <numberOfSamplesPerLine>20</numberOfSamplesPerLine>
+            <numberOfLines>20</numberOfLines>
+            <sampledPixelSpacing>1</sampledPixelSpacing>
+            <sampledLineSpacing>1</sampledLineSpacing>
+        </rasterAttributes>
+        <geographicInformation>
+            <geolocationGrid>
+                <imageTiePoint>
+                    <imageCoordinate>
+                        <line>0</line>
+                        <pixel>0</pixel>
+                    </imageCoordinate>
+                    <geodeticCoordinate>
+                        <latitude>49</latitude>
+                        <longitude>2</longitude>
+                    </geodeticCoordinate>
+                </imageTiePoint>
+                <imageTiePoint>
+                    <imageCoordinate>
+                        <line>0</line>
+                        <pixel>20</pixel>
+                    </imageCoordinate>
+                    <geodeticCoordinate>
+                        <latitude>49</latitude>
+                        <longitude>3</longitude>
+                    </geodeticCoordinate>
+                </imageTiePoint>
+                <imageTiePoint>
+                    <imageCoordinate>
+                        <line>20</line>
+                        <pixel>0</pixel>
+                    </imageCoordinate>
+                    <geodeticCoordinate>
+                        <latitude>48</latitude>
+                        <longitude>2</longitude>
+                    </geodeticCoordinate>
+                </imageTiePoint>
+                <imageTiePoint>
+                    <imageCoordinate>
+                        <line>20</line>
+                        <pixel>20</pixel>
+                    </imageCoordinate>
+                    <geodeticCoordinate>
+                        <latitude>48</latitude>
+                        <longitude>3</longitude>
+                    </geodeticCoordinate>
+                </imageTiePoint>
+            </geolocationGrid>
+            <rationalFunctions>
+              <!-- dummy and invalid values ! -->
+              <biasError units="m">biasError</biasError>
+              <randomError units="m">randomError</randomError>
+              <lineFitQuality>lineFitQuality</lineFitQuality>
+              <pixelFitQuality>pixelFitQuality</pixelFitQuality>
+              <lineOffset>lineOffset</lineOffset>
+              <pixelOffset>pixelOffset</pixelOffset>
+              <latitudeOffset units="deg">latitudeOffset</latitudeOffset>
+              <longitudeOffset units="deg">longitudeOffset</longitudeOffset>
+              <heightOffset units="m">heightOffset</heightOffset>
+              <lineScale>lineScale</lineScale>
+              <pixelScale>pixelScale</pixelScale>
+              <latitudeScale>latitudeScale</latitudeScale>
+              <longitudeScale>longitudeScale</longitudeScale>
+              <heightScale>heightScale</heightScale>
+              <lineNumeratorCoefficients>lineNumeratorCoefficients</lineNumeratorCoefficients>
+              <lineDenominatorCoefficients>lineDenominatorCoefficients</lineDenominatorCoefficients>
+              <pixelNumeratorCoefficients>pixelNumeratorCoefficients</pixelNumeratorCoefficients>
+              <pixelDenominatorCoefficients>pixelDenominatorCoefficients</pixelDenominatorCoefficients>
+            </rationalFunctions>
+            <referenceEllipsoidParameters>
+                <ellipsoidName>WGS84</ellipsoidName>
+                <semiMajorAxis>6378137</semiMajorAxis>
+                <semiMinorAxis>6356752.314245179</semiMinorAxis>
+            </referenceEllipsoidParameters>
+        </geographicInformation>
+        <lookupTable incidenceAngleCorrection="Beta Nought">lut.xml</lookupTable>
+        <lookupTable incidenceAngleCorrection="Sigma Nought">lut.xml</lookupTable>
+        <lookupTable incidenceAngleCorrection="Gamma">lut.xml</lookupTable>
+        <fullResolutionImageData pole="HH">byte_scanline.tif</fullResolutionImageData>
+        <fullResolutionImageData pole="HV">byte_scanline.tif</fullResolutionImageData>
+    </imageAttributes>
+</product>
+"""
+GDAL_RS2_PRODUCT_XML_SHA256 = "892b1ea2bfdd12e46549e336dad6f08f5ced1ca6393c26daa3196084afe6028a"
+
+
+def test_vendored_gdal_rs2_fixture_is_unmodified():
+    import hashlib
+
+    digest = hashlib.sha256(GDAL_RS2_PRODUCT_XML.encode("utf-8")).hexdigest()
+    assert digest == GDAL_RS2_PRODUCT_XML_SHA256, (
+        "the vendored GDAL RS2 fixture drifted from upstream; re-fetch it and update the "
+        "digest instead of editing it by hand"
+    )
+
+
+def test_official_gdal_rs2_product_xml_is_parsed(tmp_path):
+    """Authentic GDAL RS2 fixture: documented element names must be recognised."""
+    data_dir = tmp_path / "raw"
+    _write_product(data_dir / "RS2_OFFICIAL" / "product.xml", GDAL_RS2_PRODUCT_XML)
+    report = inventory.scan(data_dir)
+    assert report["errors"] == []
+    scene = report["scenes"][0]
+
+    # The official fixture uses GDAL's placeholder values, not real observations.
+    assert scene["product_type"] == "PRODUCT_TYPE"
+    assert scene["beam_mode"] == "BEAM_MODE_MNEMONIC"
+    assert scene["sample_type"] == "Mag"
+    assert scene["bits_per_sample"] == 8
+    # polarizations come from fullResolutionImageData/@pole in this schema
+    assert scene["polarizations"] == ["HH", "HV"]
+    assert scene["acquisition"]["start"] == "2009-03-13T00:00:00Z"
+    assert scene["acquisition"]["sensor"] == "SENSOR"
+    assert scene["sampled_pixel_spacing"] == 1.0
+    assert scene["sampled_line_spacing"] == 1.0
+    assert scene["raster_attributes"]["number_of_samples_per_line"] == 20
+    assert scene["raster_attributes"]["number_of_lines"] == 20
+    assert scene["geolocation"]["tiepoint_count"] == 4
+    assert scene["geolocation"]["has_tiepoints"] is True
+    assert scene["geolocation"]["rational_functions_present"] is True
+    assert scene["geolocation"]["ellipsoid_name"] == "WGS84"
+    assert scene["calibration"]["lut_present"] is True
+    assert scene["calibration"]["lut_references"] == ["lut.xml"]
+    assert scene["radar_geometry"]["incidence_angle_near_range"] == 10.0
+    assert scene["radar_geometry"]["incidence_angle_far_range"] == 20.0
+    assert scene["radar_geometry"]["slant_range_near_edge"] == 30.0
+    # The official fixture carries no scene identifier; that is reported, not faked.
+    assert scene["scene_id"] is None
+    assert "scene_id" in scene["missing"]
+    assert "acquisition.end" in scene["missing"]
+    # PRODUCT_TYPE is GDAL's placeholder, so no product-specific chain may be claimed.
+    assert scene["preprocessing"]["recommended"].startswith("No decision")
+    assert "unrecognised" in scene["preprocessing"]["recommended"]
+    assert scene["preprocessing"]["unknowns"]
+    json.dumps(report, allow_nan=False)
+
+
+def test_official_gdal_rs2_fixture_matches_a_prefixed_copy(tmp_path):
+    """Namespace-independence must hold for the official schema too."""
+    import xml.etree.ElementTree as ET
+
+    data_dir = tmp_path / "raw"
+    default_ns = _write_product(data_dir / "a" / "product.xml", GDAL_RS2_PRODUCT_XML)
+    del default_ns
+    root = ET.fromstring(GDAL_RS2_PRODUCT_XML)
+    ET.register_namespace("rs", "http://foo.bar/rs2")
+    ET.register_namespace("x", "http://example.invalid/x")
+    prefixed = ET.tostring(root, encoding="unicode")
+    _write_product(data_dir / "b" / "product.xml", prefixed)
+
+    plain_scene = inventory.scan(data_dir / "a")["scenes"][0]
+    prefixed_scene = inventory.scan(data_dir / "b")["scenes"][0]
+    for key in ("product_type", "polarizations", "beam_mode", "acquisition", "geolocation"):
+        assert plain_scene[key] == prefixed_scene[key], key
 
 
 # ---------------------------------------------------------------------------

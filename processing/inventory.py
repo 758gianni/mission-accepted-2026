@@ -30,8 +30,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
+import warnings
 import xml.etree.ElementTree as ET
 import zipfile
 from datetime import datetime, timezone
@@ -41,6 +43,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 __all__ = [
     "scan",
     "recommend_preprocessing",
+    "json_safe",
     "main",
     "LIMITS",
     "SKIPPED_DIRECTORIES",
@@ -294,6 +297,7 @@ _SCENE_ID_NAMES = (
 )
 _ACQ_START_NAMES = (
     "productfirstlineutctime",
+    "rawdatastarttime",
     "starttime",
     "acquisitiontime",
     "acquisitionstart",
@@ -338,6 +342,7 @@ _SAMPLE_TYPE_NAMES = (
     "samplemodeid",
     "quantizationtype",
     "imagetype",
+    "datatype",
 )
 _BITS_NAMES = ("bitspersample", "bitdepth", "datatype", "sampletypeid")
 _POL_NAMES = (
@@ -351,7 +356,15 @@ _POL_NAMES = (
     "rxpol",
     "txpol",
 )
-_BEAM_NAMES = ("beamname", "beam", "beammode", "beamtype", "beamsequence", "beamseq")
+_BEAM_NAMES = (
+    "beamname",
+    "beam",
+    "beammode",
+    "beammodemnemonic",
+    "beamtype",
+    "beamsequence",
+    "beamseq",
+)
 _MODE_NAMES = (
     "sensormode",
     "modename",
@@ -387,15 +400,18 @@ _POL_SPLIT = ("+", "/", ",", ";", " ", "\t", "\n", "|")
 _VALID_POL = {"HH", "HV", "VV", "VH", "HH+HV", "HH-HV", "VV+VH"}
 
 
+_POL_ATTRIBUTES = ("pol", "pole", "polarization", "polarisation", "txrxpolarisation")
+
+
 def _extract_polarizations(index: _XmlIndex) -> List[str]:
     found: List[str] = []
     raw_values = index.all_text(*_POL_NAMES)
-    for element in index.elements.get("pol", []) + index.elements.get("polarization", []):
-        raw_values.append(_clean(element.text) or "")
-        for attribute in ("pol", "polarization", "polarisation"):
-            value = _clean(element.get(attribute))
-            if value:
-                raw_values.append(value)
+    for elements in index.elements.values():
+        for element in elements:
+            for attribute in _POL_ATTRIBUTES:
+                value = _clean(element.get(attribute))
+                if value:
+                    raw_values.append(value)
     for raw in raw_values:
         if raw is None:
             continue
@@ -429,11 +445,28 @@ def _as_int(value: Optional[str]) -> Optional[int]:
             return None
 
 
+def _as_float(value: Optional[str]) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        number = float(value.strip())
+    except ValueError:
+        return None
+    return number if math.isfinite(number) else None
+
+
 def _collect_references(index: _XmlIndex, names: Sequence[str], tokens: Sequence[str]) -> List[str]:
-    """Collect file-ish strings (href/URI/name attributes) related to *names*."""
+    """Collect file-ish strings (attributes and element text) related to *names*.
+
+    RS2 keeps LUT filenames as the *text* of ``<lookupTable>``, while other
+    schemas use ``href``/``URI`` attributes, so both are collected.
+    """
     references: List[str] = []
     for name in names:
         for element in index.elements.get(name.lower(), []):
+            text = _clean(element.text)
+            if text and ("." in text or "/" in text):
+                references.append(text)
             for attribute in ("href", "uri", "url", "name", "fileName", "path"):
                 value = _clean(element.get(attribute))
                 if value and value not in references:
@@ -521,13 +554,21 @@ def _orbits(index: _XmlIndex) -> Dict[str, Any]:
 
 
 def _calibration(index: _XmlIndex, container_files: Sequence[str]) -> Dict[str, Any]:
-    lut_elements = index.all_text("calibrationlookuptable", "calibrationlut", "betalut", "lutfile")
+    lut_elements = index.all_text(
+        "calibrationlookuptable", "calibrationlut", "betalut", "lutfile", "lookuptable"
+    )
     noise_elements = index.all_text("noiselookuptable", "noiselut", "noiseimage", "noisefilename")
     orbit_elements = index.all_text("orbitfile", "orbitstatevector", "statevector", "orbitvec")
 
     lut_refs = _collect_references(
         index,
-        ("calibrationlookuptable", "calibrationlut", "calibration", "lutfile"),
+        (
+            "calibrationlookuptable",
+            "calibrationlut",
+            "calibration",
+            "lutfile",
+            "lookuptable",
+        ),
         ("cal", "lut", "beta"),
     )
     noise_refs = _collect_references(
@@ -559,6 +600,10 @@ def _geolocation(index: _XmlIndex) -> Dict[str, Any]:
         "gcp_count": gcp_count,
         "has_tiepoints": tiepoint_count > 0,
         "has_gcps": gcp_count > 0,
+        # RS2 carries its RPC block as <rationalFunctions>; its presence tells us the
+        # product describes geolocation by polynomial fit rather than only tie points.
+        "rational_functions_present": index.count("rationalfunctions") > 0,
+        "ellipsoid_name": index.first("ellipsoidname"),
     }
 
 
@@ -578,12 +623,28 @@ def _empty_raster(name: str, **extra: Any) -> Dict[str, Any]:
         "crs_units": None,
         "transform": None,
         "transform_order": "gdal (c, a, b, f, d, e)",
+        "pixel_step_vectors": None,
         "pixel_spacing": None,
+        "pixel_spacing_order": (
+            "column step is (a, d) and row step is (b, e) of Affine(a, b, c, d, e, f); "
+            "x == column, y == row; lengths are hypot of each step vector"
+        ),
+        "rotation_degrees": None,
+        "georeferencing": {
+            "source": None,
+            "affine": False,
+            "gcp_count": None,
+            "rpc": False,
+            "identity_transform": None,
+            "gdal_placeholder_warning": False,
+            "note": None,
+        },
         "shape": None,
         "count": None,
         "dtype": None,
         "dtypes": None,
         "nodata": None,
+        "nodata_kind": "none",
         "gcp_count": None,
         "gcps": None,
         "tiepoint_count": None,
@@ -594,6 +655,122 @@ def _empty_raster(name: str, **extra: Any) -> Dict[str, Any]:
     }
     record.update(extra)
     return record
+
+
+def _is_identity(transform: Any) -> bool:
+    try:
+        values = (transform.a, transform.b, transform.c, transform.d, transform.e, transform.f)
+    except AttributeError:
+        return False
+    return values == (1.0, 0.0, 0.0, 0.0, 1.0, 0.0)
+
+
+def _is_gdal_placeholder_warning(caught: Sequence[Any]) -> bool:
+    """True when GDAL substituted an identity matrix for missing georeferencing.
+
+    rasterio surfaces GDAL's ``NotGeoreferencedWarning`` ("Dataset has no
+    geotransform, gcps, or rpcs. The identity matrix will be returned."). That is
+    the authoritative signal that the identity transform is a placeholder rather
+    than a declared geotransform.
+    """
+    for entry in caught:
+        category = getattr(entry.category, "__name__", "")
+        message = str(entry.message).lower()
+        if category.endswith("NotGeoreferencedWarning") and "identity matrix" in message:
+            return True
+    return False
+
+
+def _encode_nodata(value: Any) -> Tuple[Optional[float], str]:
+    """Return JSON-safe nodata plus an explicit kind for nonfinite values."""
+    if value is None:
+        return None, "none"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None, "none"
+    if math.isnan(number):
+        return None, "nan"
+    if math.isinf(number):
+        return None, "posinf" if number > 0 else "neginf"
+    return number, "value"
+
+
+def _pixel_geometry(transform: Any) -> Dict[str, Any]:
+    """Step vectors and lengths for Affine(a, b, c, d, e, f).
+
+    ``x = a * col + b * row + c`` and ``y = d * col + e * row + f``, so one pixel
+    column advances by ``(a, d)`` and one pixel row by ``(b, e)``. Rotated and
+    sheared rasters therefore need the hypotenuse of each step, not the abs of a
+    single matrix diagonal.
+    """
+    a, b, c, d, e, f = (
+        transform.a,
+        transform.b,
+        transform.c,
+        transform.d,
+        transform.e,
+        transform.f,
+    )
+    column = math.hypot(a, d)
+    row = math.hypot(b, e)
+    return {
+        # GDAL / GeoTIFF geotransform ordering: (c, a, b, f, d, e)
+        "transform": [c, a, b, f, d, e],
+        "transform_order": "gdal (c, a, b, f, d, e)",
+        "pixel_step_vectors": {"column": [a, d], "row": [b, e]},
+        "pixel_spacing": {"column": column, "row": row, "x": column, "y": row},
+        "rotation_degrees": math.degrees(math.atan2(d, a)),
+    }
+
+
+def _georeferencing_record(
+    *,
+    transform: Any,
+    gcps: Sequence[Any],
+    has_rpcs: bool,
+    placeholder: bool,
+    has_crs: bool,
+) -> Dict[str, Any]:
+    """Decide whether an affine transform can be trusted, without guessing.
+
+    GDAL returns identity for an ungeoreferenced raster (signalled by
+    ``NotGeoreferencedWarning``), for a GCP-only raster and for an RPC-only
+    raster. Each of those is reported as *no affine georeferencing* while the
+    GCPs themselves are preserved. A transform that GDAL reports without any such
+    signal is kept, even when it happens to be identity.
+    """
+    identity = _is_identity(transform) if transform is not None else False
+    if placeholder:
+        # GDAL explicitly said it substituted the identity matrix.
+        source = "none"
+    elif identity and gcps:
+        source = "gcp"
+    elif identity and has_rpcs:
+        source = "rpc"
+    elif identity and not has_crs:
+        # Metadata cross-check for drivers that do not warn: identity with no CRS,
+        # no GCPs and no RPCs means there is no georeferencing at all.
+        source = "none"
+    elif transform is not None:
+        source = "affine"
+    else:
+        source = "none"
+    notes = {
+        "none": "no affine georeferencing available; transform reported as null",
+        "gcp": "ground control points define the georeferencing; affine transform is null",
+        "rpc": "rational polynomial coefficients define the georeferencing; affine transform is null",
+        "affine": "affine geotransform read from the raster header",
+    }
+    return {
+        "source": source,
+        "affine": source == "affine",
+        "gcp_count": len(gcps),
+        "rpc": bool(has_rpcs),
+        "identity_transform": identity if transform is not None else None,
+        "gdal_placeholder_warning": placeholder,
+        "note": notes[source],
+    }
 
 
 def _inspect_raster(
@@ -623,11 +800,16 @@ def _inspect_raster(
             "could not be determined"
         )
         return record
+
     dataset = None
     failures: List[str] = []
+    placeholder = False
     for candidate in candidates:
         try:
-            dataset = rasterio.open(candidate)
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                dataset = rasterio.open(candidate)
+                placeholder = _is_gdal_placeholder_warning(caught)
             break
         except Exception as exc:
             failures.append(f"{candidate}: {type(exc).__name__}: {exc}")
@@ -645,27 +827,24 @@ def _inspect_raster(
             record["shape"] = {"width": dataset.width, "height": dataset.height}
             record["dtypes"] = list(dataset.dtypes)
             record["dtype"] = dataset.dtypes[0] if dataset.dtypes else None
-            record["nodata"] = dataset.nodata
+            record["nodata"], record["nodata_kind"] = _encode_nodata(dataset.nodata)
+
+            gcps = list(getattr(dataset, "gcps", [])[0])
+            has_rpcs = bool(getattr(dataset, "rpcs", None))
+            transform = None
             try:
                 transform = dataset.transform
-                # GDAL / GeoTIFF geotransform ordering: (c, a, b, f, d, e)
-                record["transform"] = [
-                    transform.c,
-                    transform.a,
-                    transform.b,
-                    transform.f,
-                    transform.d,
-                    transform.e,
-                ]
-                record["transform_order"] = "gdal (c, a, b, f, d, e)"
-                record["pixel_spacing"] = {
-                    "x": abs(transform.a),
-                    "y": abs(transform.e),
-                }
-            except Exception:  # pragma: no cover - transform is usually present
-                record["transform"] = None
-                record["transform_order"] = "gdal (c, a, b, f, d, e)"
-                record["pixel_spacing"] = None
+            except Exception:  # pragma: no cover - rare driver failure
+                transform = None
+            record["georeferencing"] = _georeferencing_record(
+                transform=transform,
+                gcps=gcps,
+                has_rpcs=has_rpcs,
+                placeholder=placeholder,
+                has_crs=crs is not None,
+            )
+            if record["georeferencing"]["affine"] and transform is not None:
+                record.update(_pixel_geometry(transform))
             # rasterio does not expose GDAL tie points; XML-level tiepoint counts
             # are reported per scene under scene["geolocation"]["tiepoint_count"].
             record["tiepoint_count"] = None
@@ -673,18 +852,9 @@ def _inspect_raster(
                 "not exposed by rasterio; see scene.geolocation.tiepoint_count for "
                 "product.xml tiepoint metadata"
             )
-            gcps = []
-            for gcp in getattr(dataset, "gcps", [])[0]:
-                gcps.append(
-                    {
-                        "row": gcp.row,
-                        "col": gcp.col,
-                        "x": gcp.x,
-                        "y": gcp.y,
-                        "z": gcp.z,
-                    }
-                )
-            record["gcps"] = gcps
+            record["gcps"] = [
+                {"row": gcp.row, "col": gcp.col, "x": gcp.x, "y": gcp.y, "z": gcp.z} for gcp in gcps
+            ]
             record["gcp_count"] = len(gcps)
     except Exception as exc:  # unreadable/corrupt raster must not abort the scan
         record["error"] = f"{type(exc).__name__}: {exc}"
@@ -855,6 +1025,10 @@ def _parse_product_xml(
         "beam_mode": None,
         "mode": None,
         "acquisition": {},
+        "sampled_pixel_spacing": None,
+        "sampled_line_spacing": None,
+        "raster_attributes": {},
+        "radar_geometry": {},
         "orbits": {},
         "calibration": {},
         "geolocation": {},
@@ -895,6 +1069,19 @@ def _parse_product_xml(
     scene["beam_mode"] = _clean(index.first(*_BEAM_NAMES))
     scene["mode"] = _clean(index.first(*_MODE_NAMES))
     scene["acquisition"] = _acquisition(index, warnings)
+    scene["sampled_pixel_spacing"] = _as_float(index.first("sampledpixelspacing"))
+    scene["sampled_line_spacing"] = _as_float(index.first("sampledlinespacing"))
+    scene["raster_attributes"] = {
+        "number_of_samples_per_line": _as_int(index.first("numberofsamplesperline")),
+        "number_of_lines": _as_int(index.first("numberoflines")),
+    }
+    scene["radar_geometry"] = {
+        "incidence_angle_near_range": _as_float(index.first("incidenceanglenearrange")),
+        "incidence_angle_far_range": _as_float(index.first("incidenceanglefarrange")),
+        "slant_range_near_edge": _as_float(index.first("slantrangenearedege"))
+        or _as_float(index.first("slantrangenearedge")),
+        "ascending_pass_time": index.first("ascendingpasstime"),
+    }
     scene["orbits"] = _orbits(index)
     scene["calibration"] = _calibration(index, container_files)
     scene["geolocation"] = _geolocation(index)
@@ -950,6 +1137,13 @@ def _missing_fields(scene: Dict[str, Any]) -> List[str]:
             missing.append(f"{prefix}.crs")
         if not raster.get("transform"):
             missing.append(f"{prefix}.transform")
+        if not raster.get("pixel_spacing"):
+            missing.append(f"{prefix}.pixel_spacing")
+        georeferencing = raster.get("georeferencing") or {}
+        if georeferencing.get("source") not in (None, "affine"):
+            missing.append(f"{prefix}.georeferencing")
+        if raster.get("nodata_kind") == "none" and raster.get("nodata") is None:
+            missing.append(f"{prefix}.nodata")
         if raster.get("error"):
             missing.append(f"{prefix}.readable")
     return missing
@@ -1356,6 +1550,7 @@ def scan(
         "summary": _summary(scenes, collector),
     }
 
+    report = json_safe(report)
     if out_path is not None:
         _write_report(report, Path(out_path))
     return report
@@ -1389,13 +1584,34 @@ def _summary(scenes: Sequence[Dict[str, Any]], collector: _Collector) -> str:
     )
 
 
+def json_safe(value: Any) -> Any:
+    """Recursively replace nonfinite floats with ``None``.
+
+    JSON has no ``NaN``/``Infinity`` literals, so a report containing a NaN
+    nodata or spacing would not be valid JSON. Nonfinite scalars are dropped
+    (as ``null``) here, and every dump site uses ``allow_nan=False`` so any
+    regression fails loudly instead of emitting invalid JSON.
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_safe(item) for item in value]
+    return value
+
+
+def _dumps(payload: Dict[str, Any], indent: int) -> str:
+    return json.dumps(payload, indent=indent, allow_nan=False, default=str)
+
+
 def _write_report(report: Dict[str, Any], out_path: Path) -> None:
     """Write JSON atomically (temp file + ``os.replace``)."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = out_path.with_name(f".{out_path.name}.{os.getpid()}.tmp")
     try:
         with temporary.open("w", encoding="utf-8") as handle:
-            json.dump(report, handle, indent=2, sort_keys=False, default=str)
+            handle.write(_dumps(report, indent=2))
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
@@ -1449,7 +1665,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     if not (args.out and args.quiet):
-        json.dump(report, sys.stdout, indent=args.indent, default=str)
+        sys.stdout.write(_dumps(report, args.indent))
         sys.stdout.write("\n")
     return 0
 

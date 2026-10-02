@@ -26,6 +26,16 @@ not a directory (message on stderr).
 2. Parses `product.xml` **namespace-independently**: elements are indexed by their
    local name (`{http://…}productType` == `productType`), so prefixed, default-namespaced
    and no-namespace documents all produce the same result.
+   Recognised names cover the GDAL **RS2** driver schema (`frmts/rs2/rs2dataset.cpp`:
+   `product.sourceAttributes.{satellite,sensor,beamModeMnemonic,rawDataStartTime}`,
+   `product.imageGenerationParameters.generalProcessingInformation.productType`,
+   `product.imageAttributes.rasterAttributes.{dataType,bitsPerSample,
+   numberOfSamplesPerLine,numberOfLines,sampledPixelSpacing,sampledLineSpacing}`,
+   `geographicInformation.geolocationGrid.imageTiePoint`,
+   `imageAttributes.lookupTable[@incidenceAngleCorrection]` whose *text* is the LUT
+   filename, and `imageAttributes.fullResolutionImageData[@pole]`, which is where RS2
+   polarizations live) plus the Safe/`productIdentifier`/`imageTiePoints` style names.
+   Unknown names are reported as missing rather than guessed.
 3. Derives per-scene: scene ID, acquisition start/end/duration, polarizations,
    product type, sample type, bits per sample, beam mode, sensor mode, orbit
    number/range/type/direction, calibration-LUT / noise / orbit-file presence,
@@ -69,6 +79,52 @@ Tie points: rasterio does not expose GDAL tie points, so `raster.tiepoint_count`
 Tiepoint counts parsed from `product.xml` are reported per scene under
 `scene.geolocation.tiepoint_count`.
 
+### Georeferencing honesty (no placeholder identity transforms)
+
+GDAL returns an **identity matrix** when a raster has no affine georeferencing, which
+naively reads as a real 1x1 pixel spacing. The tool therefore reports
+`raster.georeferencing` and only publishes a transform it can justify:
+
+| `georeferencing.source` | When | `transform` / `pixel_spacing` |
+| --- | --- | --- |
+| `none` | GDAL emitted `NotGeoreferencedWarning` ("the identity matrix will be returned"), **or** identity with no CRS, no GCPs and no RPCs | `null` |
+| `gcp` | identity while ground control points define the georeferencing | `null`, `gcps` kept |
+| `rpc` | identity while rational polynomial coefficients define the georeferencing | `null` |
+| `affine` | GDAL reported a transform with none of the above signals — **including a legitimately declared identity geotransform** | reported, with `identity_transform: true` when it is identity |
+
+A null transform is listed in `missing_data` as `raster[<name>].transform`,
+`raster[<name>].pixel_spacing` and `raster[<name>].georeferencing`. Real GCPs are
+always preserved and reported per raster.
+
+### Pixel spacing for rotated and sheared rasters
+
+For `Affine(a, b, c, d, e, f)`, `x = a*col + b*row + c` and `y = d*col + e*row + f`, so
+one pixel column advances by `(a, d)` and one pixel row by `(b, e)`:
+
+```jsonc
+"pixel_step_vectors": {"column": [a, d], "row": [b, e]},
+"pixel_spacing": {"column": hypot(a, d), "row": hypot(b, e), "x": …column…, "y": …row…},
+"rotation_degrees": atan2(d, a) in degrees
+```
+
+`x` is the step along one pixel **column** and `y` the step along one pixel **row**.
+Hypotenuses are required: for a 30-degree rotation the true spacing is larger than the
+matrix diagonal, and `abs()` of the diagonals is wrong.
+
+### Strict JSON and nonfinite values
+
+JSON has no `NaN`/`Infinity` literals, so every report is passed through `json_safe()`
+(nonfinite floats become `null`) and serialised with `allow_nan=False`; a regression
+raises instead of writing invalid JSON. Nonfinite nodata is encoded explicitly:
+
+| `nodata` | `nodata_kind` |
+| --- | --- |
+| `-9999.0` | `value` |
+| `null` | `nan` |
+| `null` | `posinf` |
+| `null` | `neginf` |
+| `null` | `none` (no nodata declared) |
+
 ## Footprint caveat
 
 A footprint SRS in `product.xml` (commonly `EPSG:4326`) describes the **product
@@ -101,12 +157,21 @@ Check `scene.rasters[].crs` for actual raster georeferencing.
     "geolocation": {"tiepoint_count": 2, "gcp_count": 0,
                     "has_tiepoints": true, "has_gcps": false},
     "footprint": {"srs_name": "EPSG:4326", "is_geographic": true, "caveat": "…"},
+    "sampled_pixel_spacing": 12.5, "sampled_line_spacing": 12.5,
+    "raster_attributes": {"number_of_samples_per_line": …, "number_of_lines": …},
+    "radar_geometry": {"incidence_angle_near_range": …, "incidence_angle_far_range": …,
+                       "slant_range_near_edge": …, "ascending_pass_time": "…"},
     "rasters": [{"name": "IMAGEDATA/imagery_b1.tif", "inside_archive": true,
                  "epsg": 32633, "crs": "…", "crs_units": "metre",
                  "transform": [c, a, b, f, d, e], "transform_order": "gdal (c, a, b, f, d, e)",
-                 "pixel_spacing": {"x": 12.5, "y": 12.5},
+                 "pixel_step_vectors": {"column": [12.5, 0.0], "row": [0.0, -12.5]},
+                 "pixel_spacing": {"column": 12.5, "row": 12.5, "x": 12.5, "y": 12.5},
+                 "rotation_degrees": 0.0,
+                 "georeferencing": {"source": "affine", "affine": true, "gcp_count": 0,
+                                    "rpc": false, "identity_transform": false,
+                                    "gdal_placeholder_warning": false, "note": "…"},
                  "shape": {"width": 64, "height": 64}, "count": 2,
-                 "dtypes": ["float32", "float32"], "nodata": -9999.0,
+                 "dtypes": ["float32", "float32"], "nodata": -9999.0, "nodata_kind": "value",
                  "gcp_count": 0, "gcps": [], "error": null}],
     "missing": ["calibration.orbit_files", "geolocation.gcps"],
     "preprocessing": {"recommended": "…", "rationale": […], "unknowns": […],
@@ -150,10 +215,19 @@ preprocessing output is written.
 python -m pytest tests/processing/test_inventory.py -q
 ```
 
-Coverage includes: namespaced / prefixed / namespace-free XML, absent metadata,
+Coverage includes: the **official GDAL RS2 autotest `product.xml`** (vendored verbatim
+in the test module from `https://github.com/OSGeo/gdal/blob/master/autotest/gdrivers/data/rs2/product.xml`,
+blob sha256 `892b1ea2bfdd12e46549e336dad6f08f5ced1ca6393c26daa3196084afe6028a`
+(fetched 2026-10-02, asserted by a test so drift is detectable); that file states it is
+"completely artificially (and certainly not
+spec complying) RS2 product.xml", i.e. GDAL's synthetic driver test data, never a real
+acquisition — its `PRODUCT_TYPE` placeholder deliberately produces a "No decision"
+preprocessing recommendation), namespaced / prefixed / namespace-free XML, absent metadata,
 malformed XML, corrupt zip, zip path traversal (POSIX, Windows and absolute) with a
 no-files-written assertion, rasters generated on the fly (CRS, transform, shape, dtype,
-nodata, pixel spacing, GCPs), rasters inside zips, graceful `rasterio` absence,
+nodata, pixel spacing, GCPs), GDAL placeholder identity transforms, declared identity
+geotransforms, rotated and sheared spacing, NaN/±inf nodata with strict JSON output,
+rasters inside zips, graceful `rasterio` absence,
 credential-like path skipping, symlink escape, zero-scene reporting, footprint caveat,
 preprocessing decisions, and the CLI (`--out`, stdout, exit code 2).
 

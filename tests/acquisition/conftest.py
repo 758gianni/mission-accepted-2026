@@ -1,7 +1,8 @@
 """Fixtures for the acquisition wrapper tests.
 
-Nothing here performs an EODMS login; the real ~/.eodms is never read or
-written because HOME/USERPROFILE are redirected at every test.
+The environment is **never** modified: the wrapper must not repurpose
+``HOME``/``USERPROFILE``/``CODEX_HOME``. Every fixture here snapshots the real
+environment and the real ``~/.eodms`` so a test can prove nothing touched them.
 """
 
 from __future__ import annotations
@@ -14,7 +15,33 @@ import pytest
 from helpers import BOOTSTRAP_MISSING, REPO_ROOT, import_upstream
 
 
-@pytest.fixture(scope="session")
+def environment_snapshot() -> dict[str, str]:
+    return dict(os.environ)
+
+
+def home_snapshot() -> dict[str, tuple[bool, float]]:
+    """Existence + mtime of every entry in the real ``~/.eodms``."""
+    real_home = Path.home()
+    eodms_dir = real_home / ".eodms"
+    if not eodms_dir.is_dir():
+        return {"__dir__": (False, 0.0)}
+    snap = {"__dir__": (True, eodms_dir.stat().st_mtime)}
+    for entry in sorted(eodms_dir.rglob("*")):
+        snap[str(entry)] = (entry.exists(), entry.stat().st_mtime)
+    return snap
+
+
+@pytest.fixture
+def real_home_state():
+    """(env snapshot, real ~/.eodms snapshot, real home path) for leak assertions."""
+    return {
+        "environ": environment_snapshot(),
+        "home": Path.home(),
+        "eodms": home_snapshot(),
+    }
+
+
+@pytest.fixture
 def upstream():
     module = import_upstream()
     if module is None:
@@ -23,28 +50,19 @@ def upstream():
 
 
 @pytest.fixture
-def real_home(monkeypatch) -> Path:
-    """Value of the home directory *before* the test redirects it."""
-    return Path(os.path.expanduser("~"))
-
-
-@pytest.fixture(autouse=True)
-def isolated_home(tmp_path, monkeypatch, real_home):
-    """Redirect HOME/USERPROFILE to a throwaway dir and assert it stays clean."""
-    home = tmp_path / "home"
-    home.mkdir()
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("USERPROFILE", str(home))
-    monkeypatch.setenv("EODMS_REAL_HOME", str(real_home))
-    yield home
-    leaked = sorted(p.name for p in home.rglob("*")) if home.exists() else []
-    assert leaked == [], f"test wrote into the isolated HOME: {leaked}"
-
-
-@pytest.fixture
 def repo_root() -> Path:
     return REPO_ROOT
 
+
+@pytest.fixture
+def probe_observations():
+    """Collect observations taken *during* a wrapper invocation.
+
+    The ``fake_aaa`` factory runs mid-invocation, inside the sandbox, so this is
+    where the environment/path invariants are observed from the inside.
+    """
+    observations: dict[str, object] = {}
+    yield observations
 
 class _FakeAAA:
     """Records the credentials it was handed; never talks to EODMS."""
@@ -80,13 +98,16 @@ class _FakeDDS:
 
 
 @pytest.fixture
-def fake_aaa(monkeypatch):
+def fake_aaa(monkeypatch, probe_observations):
     """Stub only the network-facing factories of the pinned CLI.
 
     Real Click parsing, credential resolution, config loading and logging
     initialisation still execute; no HTTP request and no EODMS login occur.
+    The factory body runs *inside* the sandbox, which is where the
+    environment/path invariants are observed from the inside.
     """
     from acquisition import cli as wrapper_cli
+    from acquisition.sandbox import sandboxed_paths
 
     upstream = import_upstream()
     if upstream is None:
@@ -96,6 +117,10 @@ def fake_aaa(monkeypatch):
     def aaa_factory(username, password, environment="prod"):
         api = _FakeAAA(username, password, environment)
         created.append(api)
+        probe_observations["environ_during"] = environment_snapshot()
+        probe_observations["home_during"] = str(Path.home())
+        probe_observations["paths_during"] = sandboxed_paths(upstream)
+        probe_observations["default_config_direct"] = upstream._default_config_path()
         return api
 
     monkeypatch.setattr(wrapper_cli, "load_upstream", lambda: upstream)

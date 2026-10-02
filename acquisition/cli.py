@@ -210,7 +210,8 @@ def doctor() -> None:
         removed = ", ".join(sandbox.removed_commands) or "none"
         click.echo(f"forbidden upstream commands removed while running: {removed}")
         click.echo("file logging : disabled (no log file is written)")
-        click.echo("config dir   : throwaway sandbox (user ~/.eodms never read)")
+        click.echo("config dir   : task-scoped temp dir (environment and Path.home() untouched)")
+        click.echo(f"sandbox root : {sandbox.root} (removed on exit)")
         click.echo("AAA tokens   : memory-only (never written to disk)")
     click.echo(
         "upstream commands present: "

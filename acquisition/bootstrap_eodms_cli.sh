@@ -58,28 +58,49 @@ log "installing dependencies (this may take a few minutes on first run)"
 "${PY}" -m pip install --quiet "eodms-py @ git+${EODMS_PY_REPO}@${EODMS_PY_REV}"
 "${PY}" -m pip install --quiet "py-eodms-rapi @ git+${RAPI_REPO}@${RAPI_REV}"
 
-# Credential-free smoke check: import the pinned CLI and render its help.
-# No EODMS login, no ~/.eodms read, no network.
+# Credential-free smoke check: import the pinned CLI and render its help inside
+# the wrapper sandbox, which redirects every home-derived lookup to a task-scoped
+# temp dir. No EODMS login, no network, no ~/.eodms read, no log file written,
+# and no environment variable is modified.
 log "credential-free help check"
-SMOKE_HOME="$(mktemp -d)"
-trap 'rm -rf "${SMOKE_HOME}"' EXIT
 (
   cd "${SRC_DIR}"
-  HOME="${SMOKE_HOME}" USERPROFILE="${SMOKE_HOME}" \
+  PYTHONPATH="${SRC_DIR}:${REPO_ROOT}" \
     "${PY}" -W ignore -c '
+import os
 import sys
+from pathlib import Path
 from click.testing import CliRunner
+
 import eodms_cli
+from acquisition.sandbox import isolated_eodms_environment, sandboxed_paths
+
+before_env = dict(os.environ)
+before_home = str(Path.home())
+real_eodms = Path.home() / ".eodms"
+before_eodms = sorted(str(p) for p in real_eodms.rglob("*")) if real_eodms.is_dir() else []
+
 runner = CliRunner()
-for args in (["--help"], ["search", "--help"], ["download", "--help"]):
-    result = runner.invoke(eodms_cli.cli, args)
-    if result.exit_code != 0:
-        sys.stderr.write(result.output or "no output")
-        raise SystemExit("help check failed for %s" % args)
-print("[bootstrap] pinned eodms-cli help OK")
+with isolated_eodms_environment(eodms_cli) as sandbox:
+    for name, value in sandboxed_paths(eodms_cli).items():
+        if not value.startswith(sandbox.root):
+            raise SystemExit("%s escaped the sandbox: %s" % (name, value))
+    for args in (["--help"], ["search", "--help"], ["download", "--help"]):
+        result = runner.invoke(eodms_cli.cli, args)
+        if result.exit_code != 0:
+            sys.stderr.write(result.output or "no output")
+            raise SystemExit("help check failed for %s" % args)
+
+after_eodms = sorted(str(p) for p in real_eodms.rglob("*")) if real_eodms.is_dir() else []
+if after_eodms != before_eodms:
+    raise SystemExit("real ~/.eodms was modified: %s" % after_eodms)
+if dict(os.environ) != before_env or str(Path.home()) != before_home:
+    raise SystemExit("environment or home was modified")
+if Path(os.path.join(os.path.dirname(os.path.abspath(eodms_cli.__file__)), "log")).exists():
+    raise SystemExit("upstream file logging was not disabled")
+print("[bootstrap] pinned eodms-cli help OK; sandbox contained all ~/.eodms lookups")
 '
 )
 
-rm -rf "${VENV_DIR}/../.tools-smoke" 2>/dev/null || true
 log "done. run the wrapper with:"
 log "  ${VENV_DIR}/bin/python -m acquisition doctor"

@@ -78,3 +78,14 @@ def record_upstream_argv(monkeypatch, upstream_group_name: str = "cli") -> list[
 
     monkeypatch.setattr(click.Group, "main", recording_main)
     return recorded
+
+
+#: Variables the test runner itself mutates between setup and call phases.
+PYTEST_MANAGED_ENV = {"PYTEST_CURRENT_TEST", "PYTEST_XDIST_WORKER", "PYTEST_ADDOPTS"}
+
+
+def stable_environ() -> dict[str, str]:
+    """os.environ minus the keys pytest itself rewrites between phases."""
+    import os
+
+    return {k: v for k, v in os.environ.items() if k not in PYTEST_MANAGED_ENV}

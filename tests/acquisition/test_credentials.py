@@ -17,7 +17,7 @@ import pytest
 from click.testing import CliRunner
 
 from acquisition import cli as wrapper_cli
-from helpers import REPO_ROOT, contains_secret, record_upstream_argv
+from helpers import REPO_ROOT, contains_secret, record_upstream_argv, stable_environ
 
 SENTINEL_USER = "sentinel.user@example.invalid"
 SENTINEL_PASS = "s3ntinel-p4ssw0rd-DO-NOT-LOG"
@@ -228,36 +228,39 @@ def test_upstream_configure_is_removed_inside_the_sandbox(upstream, tmp_path):
     assert "configure" in upstream.cli.commands
 
 
-def test_configure_would_never_write_base64_credentials(upstream, tmp_path, monkeypatch):
-    """Directly prove the upstream configure path is what we block: it writes a
-    base64 password into the sandboxed config file."""
+def test_configure_would_never_write_base64_credentials(upstream, real_home_state):
+    """Prove what is blocked: upstream configure writes a base64 password."""
     from click.testing import CliRunner as _R
 
     from acquisition.sandbox import isolated_eodms_environment
 
     configure_cmd = upstream.cli.commands["configure"]
-    with isolated_eodms_environment(upstream):
-        runner = _R()
-        result = runner.invoke(
-            configure_cmd,
-            ["--username", SENTINEL_USER, "--password", SENTINEL_PASS],
+    with isolated_eodms_environment(upstream) as sandbox:
+        result = _R().invoke(
+            configure_cmd, ["--username", SENTINEL_USER, "--password", SENTINEL_PASS]
         )
+        assert result.exit_code == 0, result.output
+        written = Path(sandbox.config_path)
+        assert written.is_file()
+        assert written.read_text(encoding="utf-8").count(SENTINEL_USER) >= 1
+
     import base64
 
     encoded = base64.b64encode(SENTINEL_PASS.encode()).decode()
-    assert result.exit_code == 0, result.output
-    assert not contains_secret(Path(os.environ["HOME"]), SENTINEL_USER, encoded)
-    assert not contains_secret(Path(os.environ["HOME"]), SENTINEL_USER)
-    real_home_eodms = Path(os.environ["EODMS_REAL_HOME"]) / ".eodms"
-    assert not contains_secret(real_home_eodms, SENTINEL_USER, encoded)
+    real_home = real_home_state["home"]
+    for root in (real_home / ".eodms", Path(wrapper_cli.UPSTREAM_SRC_DIR)):
+        assert not contains_secret(root, SENTINEL_USER, encoded), f"leaked into {root}"
+    assert not contains_secret(real_home / ".eodms", SENTINEL_PASS)
 
 
 # --------------------------------------------------------------------------
-# no credential files, no logs, AAA tokens stay in memory
+# no credential files, no logs, AAA tokens stay in memory, HOME untouched
 # --------------------------------------------------------------------------
 
 
-def test_no_credential_files_or_logs_are_written(monkeypatch, tmp_path, fake_aaa):
+def test_no_credential_files_or_logs_are_written(
+    monkeypatch, tmp_path, fake_aaa, real_home_state
+):
     monkeypatch.setattr(wrapper_cli, "prompt_username", lambda *a, **k: SENTINEL_USER)
     monkeypatch.setattr(wrapper_cli, "prompt_password", lambda *a, **k: SENTINEL_PASS)
 
@@ -284,12 +287,13 @@ def test_no_credential_files_or_logs_are_written(monkeypatch, tmp_path, fake_aaa
     import base64
 
     encoded = base64.b64encode(SENTINEL_PASS.encode()).decode()
-    real_home = Path(os.environ["EODMS_REAL_HOME"])
+    real_home = real_home_state["home"]
     scanned = [
         tmp_path,
         real_home / ".eodms",
         Path(wrapper_cli.UPSTREAM_SRC_DIR) / "log",
         real_home / "Downloads",
+        REPO_ROOT / "data",
     ]
     for root in scanned:
         assert not contains_secret(root, SENTINEL_PASS), f"password leaked under {root}"
@@ -297,13 +301,151 @@ def test_no_credential_files_or_logs_are_written(monkeypatch, tmp_path, fake_aaa
     assert not contains_secret(REPO_ROOT / "acquisition", SENTINEL_PASS)
 
 
-def test_aaa_token_persistence_is_disabled(upstream, monkeypatch):
+def test_real_home_eodms_is_never_touched(
+    monkeypatch, tmp_path, fake_aaa, real_home_state
+):
+    """Sentinel credentials must not reach the real ~/.eodms, and it must not
+    be created or modified by a run."""
+    real_home = real_home_state["home"]
+    before = dict(real_home_state["eodms"])
+    monkeypatch.setattr(wrapper_cli, "prompt_username", lambda *a, **k: SENTINEL_USER)
+    monkeypatch.setattr(wrapper_cli, "prompt_password", lambda *a, **k: SENTINEL_PASS)
+
+    result = _run(
+        [
+            "search",
+            "--collection",
+            "Radarsat-2_Tropical_Forest_Products",
+            "--bbox",
+            "-100,10,-99,11",
+            "--output",
+            str(tmp_path / "r.geojson"),
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    assert not contains_secret(real_home / ".eodms", SENTINEL_USER, SENTINEL_PASS)
+
+    from conftest import home_snapshot
+
+    after = home_snapshot()
+    assert after == before, f"real ~/.eodms changed: {set(after.items()) ^ set(before.items())}"
+    assert real_home.is_dir()
+
+
+def test_environment_is_never_modified_during_or_after_a_run(
+    monkeypatch, tmp_path, fake_aaa, real_home_state, probe_observations
+):
+    """The wrapper must not repurpose HOME/USERPROFILE/CODEX_HOME."""
+    monkeypatch.setattr(wrapper_cli, "prompt_username", lambda *a, **k: SENTINEL_USER)
+    monkeypatch.setattr(wrapper_cli, "prompt_password", lambda *a, **k: SENTINEL_PASS)
+
+    before_environ = stable_environ()
+    before_home = str(real_home_state["home"])
+
+    result = _run(
+        [
+            "search",
+            "--collection",
+            "Radarsat-2_Tropical_Forest_Products",
+            "--bbox",
+            "-100,10,-99,11",
+            "--output",
+            str(tmp_path / "r.geojson"),
+        ]
+    )
+    assert result.exit_code == 0, result.output
+
+    # observed from inside the invocation, after credential resolution
+    during = probe_observations["environ_during"]
+    for var in ("HOME", "USERPROFILE", "CODEX_HOME"):
+        assert during.get(var) == before_environ.get(var), f"{var} changed mid-invocation"
+    assert probe_observations["home_during"] == before_home
+
+    for var in ("HOME", "USERPROFILE", "CODEX_HOME"):
+        assert os.environ.get(var) == before_environ.get(var), f"{var} changed"
+    assert stable_environ() == before_environ
+    assert str(Path.home()) == before_home
+
+
+def test_all_home_derived_paths_are_redirected_into_the_sandbox(
+    monkeypatch, tmp_path, fake_aaa, probe_observations
+):
+    """Every audited ~/.eodms lookup must resolve inside the task temp dir."""
+    monkeypatch.setattr(wrapper_cli, "prompt_username", lambda *a, **k: SENTINEL_USER)
+    monkeypatch.setattr(wrapper_cli, "prompt_password", lambda *a, **k: SENTINEL_PASS)
+    result = _run(
+        [
+            "search",
+            "--collection",
+            "Radarsat-2_Tropical_Forest_Products",
+            "--bbox",
+            "-100,10,-99,11",
+            "--output",
+            str(tmp_path / "r.geojson"),
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    paths = probe_observations["paths_during"]
+    assert set(paths) == {
+        "eodms_cli.default_config",
+        "config_util.config_fn",
+        "config_util.legacy_config_fn",
+        "aaa.creds_fn",
+        "aaa.token_lock_fn",
+    }
+    sandbox_root = str(Path(paths["eodms_cli.default_config"]).parents[1])
+    for name, value in paths.items():
+        assert value.startswith(sandbox_root), f"{name}={value} escaped the sandbox"
+    assert probe_observations["default_config_direct"] == paths["eodms_cli.default_config"]
+
+
+def test_sandbox_restores_everything_it_patched(upstream, real_home_state):
+    import scripts.config_util as config_util
+
+    import eodms.aaa as aaa_module
+    from acquisition.sandbox import isolated_eodms_environment, sandboxed_paths
+
+    before_env = stable_environ()
+    before_paths = sandboxed_paths(upstream)
+    before_config_cmd = upstream.cli.commands["configure"]
+    before_export = aaa_module.AAA_Creds.export_vals
+
+    with isolated_eodms_environment(upstream) as sandbox:
+        assert Path(sandbox.root).is_dir()
+
+    assert stable_environ() == before_env
+    assert sandboxed_paths(upstream) == before_paths
+    assert upstream.cli.commands["configure"] is before_config_cmd
+    assert aaa_module.AAA_Creds.export_vals is before_export
+    assert upstream.os is not before_paths  # sanity: it was replaced during the block
+    assert config_util.os.path.expanduser("~") == str(real_home_state["home"])
+    assert not Path(sandbox.root).exists(), "task temp dir was not cleaned up"
+
+
+def test_sandbox_uses_a_task_scoped_temp_dir_not_a_home_rewrite(upstream):
+    """Regression guard: no HOME/USERPROFILE mutation is permitted."""
+    import inspect
+
+    from acquisition import sandbox as sandbox_mod
+
+    source = inspect.getsource(sandbox_mod)
+    code = "\n".join(
+        line for line in source.splitlines() if not line.lstrip().startswith("#")
+    )
+    code = code.split('"""', 2)[-1]  # drop the module docstring
+    for forbidden in ("environ[", "setenv(", "putenv(", "unsetenv(", "putenv"):
+        assert forbidden not in code, f"sandbox must not touch the environment: {forbidden}"
+    # every home lookup must go through a shimmed module, never the real os.path
+    assert 'self._real.expanduser(text)' in code
+    assert "_OsModuleShim(" in code
+
+
+def test_aaa_token_persistence_is_disabled(upstream, real_home_state):
     from eodms.aaa import AAA_Creds
 
-    creds = AAA_Creds()
-    monkeypatch.setenv("HOME", str(Path(os.environ["HOME"])))
     from acquisition.sandbox import isolated_eodms_environment
 
+    creds = AAA_Creds()
     with isolated_eodms_environment(upstream):
         creds.access_token = "access-token-sentinel"
         creds.refresh_token = "refresh-token-sentinel"
@@ -311,18 +453,11 @@ def test_aaa_token_persistence_is_disabled(upstream, monkeypatch):
         assert creds.import_vals() is None
         assert creds.access_token == "access-token-sentinel"
 
-    home = Path(os.environ["HOME"])
-    assert not contains_secret(home, "access-token-sentinel", "refresh-token-sentinel")
-
-
-def test_sandbox_restores_environment(monkeypatch, upstream):
-    from acquisition.sandbox import isolated_eodms_environment
-
-    before = {k: os.environ.get(k) for k in ("HOME", "USERPROFILE")}
-    with isolated_eodms_environment(upstream) as sandbox:
-        assert os.environ["HOME"] != before["HOME"]
-        assert Path(sandbox.home).is_dir()
-    assert {k: os.environ.get(k) for k in ("HOME", "USERPROFILE")} == before
+    real_home = real_home_state["home"]
+    assert not contains_secret(
+        real_home / ".eodms", "access-token-sentinel", "refresh-token-sentinel"
+    )
+    assert not contains_secret(real_home / ".eodms", "aaa_creds")
 
 
 def test_sandbox_removes_any_file_handlers_it_finds(upstream):

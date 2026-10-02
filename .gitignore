@@ -1,0 +1,18 @@
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+/.aws/
+/.codex/
+
+# Swarmforge runtime database and sidecar files
+/data/*.sqlite
+/data/*.sqlite-*
+/data/*.sqlite.lock
+
+# Operating system metadata
+.DS_Store
+Thumbs.db
+*:Zone.Identifier

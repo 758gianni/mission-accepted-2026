@@ -99,8 +99,11 @@ def create_app(
             response.headers["access-control-allow-methods"] = "GET, HEAD, OPTIONS"
             response.headers["access-control-allow-headers"] = "Accept, Content-Type"
             response.headers["access-control-max-age"] = "600"
+            response.headers.setdefault("x-content-type-options", "nosniff")
             return response
-        return await call_next(request)
+        response = await call_next(request)
+        response.headers.setdefault("x-content-type-options", "nosniff")
+        return response
 
     def snapshot() -> BundleSnapshot:
         return store.snapshot()

@@ -21,6 +21,7 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import datetime
+from urllib.parse import urlsplit
 from typing import Any, Mapping
 
 ANALYSIS_FILENAME = "analysis.json"
@@ -37,11 +38,24 @@ PRIORITY_UNITS = "dB sqrt(ha)"
 PRIORITY_FORMULA = "magnitude_db * sqrt(area_ha)"
 PERSISTENCE_STATUSES = frozenset({"not_evaluable", "observed"})
 
-#: Absolute tolerance for the area relations in ``analysis.metrics``, in
-#: hectares (0.01 ha = 100 m^2). Area arithmetic on rasterised regions
-#: accumulates small floating point error, so sums are compared with this
-#: tolerance instead of exact equality. Comparisons are *never* looser.
+#: Absolute tolerance for the area relations, in hectares
+#: (0.01 ha = 100 m^2). Area arithmetic on rasterised regions accumulates
+#: small floating point error, so sums are compared with this tolerance
+#: instead of exact equality. Comparisons are *never* looser.
 AREA_TOLERANCE_HA = 0.01
+
+#: Absolute tolerance in dB for threshold comparisons.
+DB_TOLERANCE_DB = 0.01
+
+#: Tolerances for derived ratios a producer may legitimately round:
+#: ``persistence.rate`` and ``priority_score``.
+RATE_ABS_TOLERANCE = 0.01
+RATE_REL_TOLERANCE = 1e-3
+PRIORITY_ABS_TOLERANCE = 0.01
+PRIORITY_REL_TOLERANCE = 1e-3
+
+#: Schemes permitted for ``scenes[].catalog_url``.
+CATALOG_URL_SCHEMES = frozenset({"http", "https"})
 
 GEOMETRY_TYPES = frozenset({"Polygon", "MultiPolygon"})
 MINIMUM_SEPARATE_DATES = 2
@@ -254,7 +268,13 @@ def _scene(value: Any, label: str) -> datetime:
         _integer(relative_orbit, f"{label}.relative_orbit")
     _text(_present(scene, "product_type", label), f"{label}.product_type")
     _text(_present(scene, "source_collection", label), f"{label}.source_collection")
-    _text(_present(scene, "catalog_url", label), f"{label}.catalog_url")
+    catalog_url = _text(_present(scene, "catalog_url", label), f"{label}.catalog_url")
+    try:
+        parts = urlsplit(catalog_url)
+    except ValueError:
+        _fail(f"{label}.catalog_url", "must be an absolute http or https URL")
+    if parts.scheme.lower() not in CATALOG_URL_SCHEMES or not parts.netloc:
+        _fail(f"{label}.catalog_url", "must be an absolute http or https URL")
     return acquired_at
 
 
@@ -264,7 +284,15 @@ def _registration(value: Any, label: str) -> None:
     _nullable(_present(registration, "residual_pixels", label), f"{label}.residual_pixels")
 
 
-def _method(value: Any) -> list[Any]:
+@dataclass(frozen=True)
+class MethodLimits:
+    """Thresholds a region must clear, taken from ``analysis.method``."""
+
+    threshold_db: float
+    minimum_area_ha: float
+
+
+def _method(value: Any) -> MethodLimits:
     label = "analysis.method"
     method = _mapping(value, label)
     quantity = _text(_present(method, "quantity", label), f"{label}.quantity")
@@ -278,8 +306,18 @@ def _method(value: Any) -> list[Any]:
     )
     if change_definition != CHANGE_DEFINITION:
         _fail(f"{label}.change_definition", f"must be '{CHANGE_DEFINITION}'")
-    _number(_present(method, "threshold_db", label), f"{label}.threshold_db")
-    _non_negative(_present(method, "minimum_area_ha", label), f"{label}.minimum_area_ha")
+    threshold_db = _number(
+        _present(method, "threshold_db", label), f"{label}.threshold_db"
+    )
+    if threshold_db <= 0:
+        _fail(
+            f"{label}.threshold_db",
+            "must be strictly positive; it is compared against the absolute "
+            "magnitude threshold (median of |dB|), not against the signed median",
+        )
+    minimum_area_ha = _non_negative(
+        _present(method, "minimum_area_ha", label), f"{label}.minimum_area_ha"
+    )
     _text(_present(method, "speckle_filter", label), f"{label}.speckle_filter")
     _registration(_present(method, "registration", label), f"{label}.registration")
     preprocessing = _list(
@@ -289,7 +327,9 @@ def _method(value: Any) -> list[Any]:
     )
     for index, step in enumerate(preprocessing):
         _text(step, f"{label}.preprocessing[{index}]")
-    return preprocessing
+    return MethodLimits(
+        threshold_db=threshold_db, minimum_area_ha=minimum_area_ha
+    )
 
 
 def _metrics(value: Any, scene_count: int) -> dict[str, Any]:
@@ -350,7 +390,7 @@ def _imagery_entry(key: str, value: Any) -> tuple[str, tuple[float, float, float
 
 def _validate_analysis(
     document: Any,
-) -> tuple[dict[str, Any], frozenset[datetime], str | None]:
+) -> tuple[dict[str, Any], tuple[datetime, ...], MethodLimits, str | None]:
     label = "analysis"
     analysis = _mapping(document, label)
     schema_version = _integer(_present(analysis, "schema_version", label), f"{label}.schema_version")
@@ -361,9 +401,21 @@ def _validate_analysis(
     _bbox(_present(analysis, "bbox", label), f"{label}.bbox")
 
     scenes = _list(_present(analysis, "scenes", label), f"{label}.scenes")
-    dates = [
-        _scene(scene, f"{label}.scenes[{index}]") for index, scene in enumerate(scenes)
-    ]
+    dates: list[datetime] = []
+    identifiers: set[str] = set()
+    for index, scene in enumerate(scenes):
+        scene_label = f"{label}.scenes[{index}]"
+        dates.append(_scene(scene, scene_label))
+        scene_id = str(_mapping(scene, scene_label)["id"])
+        if scene_id in identifiers:
+            _fail(f"{scene_label}.id", "duplicates an earlier scene id")
+        identifiers.add(scene_id)
+    for index in range(1, len(dates)):
+        if dates[index] <= dates[index - 1]:
+            _fail(
+                f"{label}.scenes",
+                "must be sorted by acquired_at with unique acquisition times",
+            )
     distinct = frozenset(dates)
     if len(distinct) < MINIMUM_SEPARATE_DATES:
         _fail(
@@ -371,7 +423,7 @@ def _validate_analysis(
             f"requires at least {MINIMUM_SEPARATE_DATES} separate acquisition dates",
         )
 
-    _method(_present(analysis, "method", label))
+    limits = _method(_present(analysis, "method", label))
     _metrics(_present(analysis, "metrics", label), scene_count=len(scenes))
 
     imagery = _mapping(_present(analysis, "imagery", label), f"{label}.imagery")
@@ -390,7 +442,7 @@ def _validate_analysis(
     for index, item in enumerate(limitations):
         _text(item, f"{label}.limitations[{index}]")
 
-    return dict(analysis), distinct, demo_region_id
+    return dict(analysis), tuple(sorted(distinct)), limits, demo_region_id
 
 
 # --------------------------------------------------------------------------
@@ -398,7 +450,15 @@ def _validate_analysis(
 # --------------------------------------------------------------------------
 
 
-def _persistence(value: Any, label: str) -> None:
+def _persistence(value: Any, label: str, later_acquisitions: int) -> None:
+    """Persistence must agree with the acquisitions that actually follow.
+
+    ``observations_after_detection`` counts real acquisitions, so it cannot
+    exceed the number of scene acquisitions later than ``detected_at``. With a
+    prepared pair the detection acquisition is the latest one, there is nothing
+    to observe afterwards, and the region must stay ``not_evaluable`` with zero
+    counts and a null rate.
+    """
     persistence = _mapping(value, label)
     status = _text(_present(persistence, "status", label), f"{label}.status")
     if status not in PERSISTENCE_STATUSES:
@@ -414,28 +474,57 @@ def _persistence(value: Any, label: str) -> None:
     if observations < 0 or changed < 0:
         _fail(label, "observation counts must not be negative")
     if changed > observations:
-        _fail(f"{label}.changed_observations", "must not exceed observations_after_detection")
+        _fail(
+            f"{label}.changed_observations",
+            "must not exceed observations_after_detection",
+        )
+    if observations > later_acquisitions:
+        _fail(
+            f"{label}.observations_after_detection",
+            f"exceeds the {later_acquisitions} acquisition(s) later than detected_at",
+        )
     rate = _present(persistence, "rate", label)
-    if rate is None:
-        if status == "observed":
-            _fail(f"{label}.rate", "is required when status is 'observed'")
-    else:
-        rate_value = _number(rate, f"{label}.rate")
-        if not 0.0 <= rate_value <= 1.0:
-            _fail(f"{label}.rate", "must be between 0 and 1")
-        if status == "not_evaluable":
+    if status == "not_evaluable":
+        if observations != 0 or changed != 0:
+            _fail(
+                label,
+                "must report zero observations and zero changed observations "
+                "when status is 'not_evaluable'",
+            )
+        if rate is not None:
             _fail(f"{label}.rate", "must be null when status is 'not_evaluable'")
+        return
+    if observations < 1:
+        _fail(
+            f"{label}.observations_after_detection",
+            "must be at least 1 when status is 'observed'",
+        )
+    if rate is None:
+        _fail(f"{label}.rate", "is required when status is 'observed'")
+    rate_value = _number(rate, f"{label}.rate")
+    if not 0.0 <= rate_value <= 1.0:
+        _fail(f"{label}.rate", "must be between 0 and 1")
+    expected = changed / observations
+    if not math.isclose(
+        rate_value, expected, rel_tol=RATE_REL_TOLERANCE, abs_tol=RATE_ABS_TOLERANCE
+    ):
+        _fail(
+            f"{label}.rate",
+            f"must equal changed_observations / observations_after_detection "
+            f"({expected:.6f}) within {RATE_ABS_TOLERANCE}",
+        )
 
 
-def _time_series(value: Any, label: str) -> None:
-    series = _list(value, label, allow_empty=True)
+def _time_series(
+    value: Any, label: str, acquisitions: tuple[datetime, ...]
+) -> None:
+    """Every point must be a real acquisition. Gaps are never filled in."""
+    series = _list(value, label)
     previous: datetime | None = None
     for index, item in enumerate(series):
         item_label = f"{label}[{index}]"
         entry = _mapping(item, item_label)
-        acquired_at = parse_utc_timestamp(
-            _present(entry, "acquired_at", item_label), f"{item_label}.acquired_at"
-        )
+        acquired_at = _acquisition(entry, "acquired_at", item_label, acquisitions)
         if previous is not None and acquired_at <= previous:
             _fail(f"{item_label}.acquired_at", "must be strictly ascending")
         previous = acquired_at
@@ -453,7 +542,7 @@ def _time_series(value: Any, label: str) -> None:
 
 
 def _acquisition(
-    mapping: Mapping[str, Any], key: str, label: str, acquisitions: frozenset[datetime]
+    mapping: Mapping[str, Any], key: str, label: str, acquisitions: tuple[datetime, ...]
 ) -> datetime:
     """Read a timestamp that must name one of the bundle's acquisitions."""
     field_label = f"{label}.{key}"
@@ -464,13 +553,35 @@ def _acquisition(
 
 
 def _region_properties(
-    value: Any, label: str, acquisitions: frozenset[datetime]
+    value: Any,
+    label: str,
+    acquisitions: tuple[datetime, ...],
+    limits: MethodLimits,
 ) -> None:
     properties = _mapping(value, label)
+
     _text(_present(properties, "region_id", label), f"{label}.region_id")
-    _non_negative(_present(properties, "area_ha", label), f"{label}.area_ha")
-    _number(_present(properties, "change_db", label), f"{label}.change_db")
-    _non_negative(_present(properties, "magnitude_db", label), f"{label}.magnitude_db")
+    area_ha = _non_negative(_present(properties, "area_ha", label), f"{label}.area_ha")
+    change_db = _number(_present(properties, "change_db", label), f"{label}.change_db")
+    magnitude_db = _non_negative(
+        _present(properties, "magnitude_db", label), f"{label}.magnitude_db"
+    )
+
+    # The detection gate is on the absolute magnitude, i.e. the median of |dB|.
+    # The signed median may cancel out inside a heterogeneous region without
+    # any of the region falling below the threshold, so abs(change_db) is
+    # deliberately not compared against threshold_db.
+    if magnitude_db + DB_TOLERANCE_DB < limits.threshold_db:
+        _fail(
+            f"{label}.magnitude_db",
+            f"is below method.threshold_db ({limits.threshold_db}); a region "
+            "below the detection threshold is not a detected change region",
+        )
+    if area_ha + AREA_TOLERANCE_HA < limits.minimum_area_ha:
+        _fail(
+            f"{label}.area_ha",
+            f"is below method.minimum_area_ha ({limits.minimum_area_ha})",
+        )
 
     # Two scenes cannot establish stability or a physical onset time, so these
     # fields describe *observations* only: which acquisition was used as the
@@ -493,7 +604,10 @@ def _region_properties(
         _fail(interval_label, "end must not precede start")
     if start > baseline_at or detected_at > end:
         _fail(interval_label, "must bracket baseline_at and detected_at")
-    _non_negative(_present(properties, "priority_score", label), f"{label}.priority_score")
+
+    priority_score = _non_negative(
+        _present(properties, "priority_score", label), f"{label}.priority_score"
+    )
     units = _text(_present(properties, "priority_units", label), f"{label}.priority_units")
     if units != PRIORITY_UNITS:
         _fail(f"{label}.priority_units", f"must be '{PRIORITY_UNITS}'")
@@ -502,14 +616,32 @@ def _region_properties(
     )
     if formula != PRIORITY_FORMULA:
         _fail(f"{label}.priority_formula", f"must be '{PRIORITY_FORMULA}'")
+    expected_score = magnitude_db * math.sqrt(area_ha)
+    if not math.isclose(
+        priority_score,
+        expected_score,
+        rel_tol=PRIORITY_REL_TOLERANCE,
+        abs_tol=PRIORITY_ABS_TOLERANCE,
+    ):
+        _fail(
+            f"{label}.priority_score",
+            f"must equal magnitude_db * sqrt(area_ha) ({expected_score:.6f}) "
+            f"within {PRIORITY_ABS_TOLERANCE}",
+        )
+
+    later_acquisitions = sum(1 for stamp in acquisitions if stamp > detected_at)
     _persistence(
-        _present(properties, "persistence", label), f"{label}.persistence"
+        _present(properties, "persistence", label),
+        f"{label}.persistence",
+        later_acquisitions,
     )
     _nullable(
         _present(properties, "historical_anomaly", label), f"{label}.historical_anomaly"
     )
     _text(_present(properties, "explanation", label), f"{label}.explanation")
-    _time_series(_present(properties, "time_series", label), f"{label}.time_series")
+    _time_series(
+        _present(properties, "time_series", label), f"{label}.time_series", acquisitions
+    )
 
 
 def _geometry(value: Any, label: str) -> None:
@@ -528,7 +660,7 @@ def _geometry(value: Any, label: str) -> None:
 
 
 def _validate_regions(
-    document: Any, acquisitions: frozenset[datetime]
+    document: Any, acquisitions: tuple[datetime, ...], limits: MethodLimits
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     label = "regions"
     regions = _mapping(document, label)
@@ -550,7 +682,9 @@ def _validate_regions(
         properties = _mapping(
             _present(entry, "properties", feature_label), f"{feature_label}.properties"
         )
-        _region_properties(properties, f"{feature_label}.properties", acquisitions)
+        _region_properties(
+            properties, f"{feature_label}.properties", acquisitions, limits
+        )
         if properties["region_id"] != feature_id:
             _fail(
                 f"{feature_label}.properties.region_id",
@@ -683,8 +817,10 @@ def build_validated_bundle(
     bundle_dir,
 ) -> ValidatedBundle:
     """Validate both JSON documents plus the declared imagery on disk."""
-    analysis, acquisitions, demo_region_id = _validate_analysis(analysis_document)
-    regions, index = _validate_regions(regions_document, acquisitions)
+    analysis, acquisitions, limits, demo_region_id = _validate_analysis(
+        analysis_document
+    )
+    regions, index = _validate_regions(regions_document, acquisitions, limits)
     imagery = resolve_imagery(bundle_dir, _mapping(analysis["imagery"], "analysis.imagery"))
     cross_check(analysis, regions, index, imagery, demo_region_id)
     return ValidatedBundle(

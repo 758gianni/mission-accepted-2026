@@ -584,6 +584,7 @@ def test_magnitude_and_signed_median_are_served_independently(tmp_path: Path) ->
     # median(|dB|) is not |median(dB)|; both are valid and are not reconciled.
     props["change_db"] = -1.0
     props["magnitude_db"] = 3.0
+    props["priority_score"] = 3.0 * (props["area_ha"] ** 0.5)
     bundle = write_bundle(tmp_path, regions=regions)
     client = TestClient(create_app(bundle_dir=bundle))
     assert client.get("/api/status").json()["state"] == "ready"
@@ -602,5 +603,8 @@ def test_positive_and_negative_changes_both_valid(tmp_path: Path) -> None:
     regions = regions_document()
     regions["features"][0]["properties"]["change_db"] = 2.5
     regions["features"][0]["properties"]["magnitude_db"] = 2.5
+    regions["features"][0]["properties"]["priority_score"] = 2.5 * (
+        regions["features"][0]["properties"]["area_ha"] ** 0.5
+    )
     bundle = write_bundle(tmp_path, regions=regions)
     assert TestClient(create_app(bundle_dir=bundle)).get("/api/status").json()["state"] == "ready"

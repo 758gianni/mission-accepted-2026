@@ -33,7 +33,7 @@ class StatusResponse(BaseModel):
 
 
 class SceneResponse(BaseModel):
-    id: str
+    id: str = Field(description="Unique within the bundle; scenes are sorted by acquired_at.")
     acquired_at: str = Field(description="ISO 8601 acquisition time in UTC.")
     polarization: str
     beam_mode: str
@@ -41,7 +41,7 @@ class SceneResponse(BaseModel):
     relative_orbit: int | None
     product_type: str
     source_collection: str
-    catalog_url: str
+    catalog_url: str = Field(description="Absolute http or https URL.")
 
 
 class RegistrationResponse(BaseModel):
@@ -53,8 +53,14 @@ class MethodResponse(BaseModel):
     quantity: Literal["sigma0", "gamma0"]
     units: Literal["dB"]
     change_definition: str
-    threshold_db: float
-    minimum_area_ha: float
+    threshold_db: float = Field(
+        gt=0.0,
+        description="Strictly positive magnitude threshold in dB, compared against "
+        "each region's magnitude_db (median of |dB|) rather than the signed median.",
+    )
+    minimum_area_ha: float = Field(
+        description="Minimum mapped area in hectares; every region must reach it."
+    )
     speckle_filter: str
     registration: RegistrationResponse
     preprocessing: list[str]
@@ -98,12 +104,18 @@ class AnalysisResponse(BaseModel):
 
 
 class PersistenceResponse(BaseModel):
+    """Counts of real acquisitions observed after the detection acquisition."""
+
     status: Literal["not_evaluable", "observed"]
-    observations_after_detection: int
+    observations_after_detection: int = Field(
+        description="Acquisitions later than detected_at. Zero means the detection "
+        "acquisition is the latest one, as with a prepared pair."
+    )
     changed_observations: int
     rate: float | None = Field(
         default=None,
-        description="Null means unavailable, not zero.",
+        description="changed_observations / observations_after_detection. "
+        "Null means unavailable, not zero.",
     )
 
 
@@ -139,7 +151,9 @@ class RegionPropertiesResponse(BaseModel):
         description="Acquisition window the observation is bracketed by. "
         "Two scenes cannot establish a physical onset time."
     )
-    priority_score: float
+    priority_score: float = Field(
+        description="magnitude_db * sqrt(area_ha), validated against that formula."
+    )
     priority_units: str
     priority_formula: str
     persistence: PersistenceResponse

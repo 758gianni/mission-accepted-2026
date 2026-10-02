@@ -68,7 +68,7 @@ BASE_ANALYSIS: dict[str, Any] = {
         "quantity": "sigma0",
         "units": "dB",
         "change_definition": "10*log10(after/before)",
-        "threshold_db": -2.0,
+        "threshold_db": 1.0,
         "minimum_area_ha": 1.0,
         "speckle_filter": "none (synthetic fixture)",
         "registration": {"status": "synthetic", "residual_pixels": 0.0},
@@ -134,7 +134,7 @@ BASE_REGIONS: dict[str, Any] = {
                     "start": "2026-01-15T10:00:00Z",
                     "end": "2026-03-20T10:00:00Z",
                 },
-                "priority_score": 3.07,
+                "priority_score": 3.074593469062211,
                 "priority_units": "dB sqrt(ha)",
                 "priority_formula": "magnitude_db * sqrt(area_ha)",
                 "persistence": {
@@ -201,14 +201,14 @@ BASE_REGIONS: dict[str, Any] = {
                     "start": "2026-01-15T10:00:00Z",
                     "end": "2026-03-20T10:00:00Z",
                 },
-                "priority_score": 2.71,
+                "priority_score": 2.7041634565979917,
                 "priority_units": "dB sqrt(ha)",
                 "priority_formula": "magnitude_db * sqrt(area_ha)",
                 "persistence": {
-                    "status": "observed",
-                    "observations_after_detection": 2,
-                    "changed_observations": 2,
-                    "rate": 1.0,
+                    "status": "not_evaluable",
+                    "observations_after_detection": 0,
+                    "changed_observations": 0,
+                    "rate": None,
                 },
                 "historical_anomaly": None,
                 "explanation": "Synthetic fixture region.",
@@ -315,3 +315,125 @@ def reencode_png(width: int = 2, height: int = 2) -> bytes:
         + chunk(b"IDAT", zlib.compress(raw))
         + chunk(b"IEND", b"")
     )
+
+
+# ---------------------------------------------------------------------------
+# Multi-scene bundle: the only shape in which "observed" persistence can be
+# true, because detection must precede at least one later acquisition. Four
+# acquisitions so that a fractional persistence rate is reachable.
+# ---------------------------------------------------------------------------
+
+MULTI_SCENE_ACQUISITIONS = (
+    "2026-01-15T10:00:00Z",
+    "2026-03-20T10:00:00Z",
+    "2026-06-10T10:00:00Z",
+    "2026-08-05T10:00:00Z",
+)
+
+
+def multi_scene_analysis() -> dict[str, Any]:
+    document = analysis_document()
+    document["analysis_id"] = "synthetic-analysis-0004"
+    document["scenes"][1]["id"] = "SYNTHETIC-MIDDLE"
+    document["scenes"][1]["catalog_url"] = "https://example.invalid/catalog/SYNTHETIC-MIDDLE"
+    document["scenes"].append(
+        {
+            "id": "SYNTHETIC-LATER",
+            "acquired_at": MULTI_SCENE_ACQUISITIONS[2],
+            "polarization": "VV",
+            "beam_mode": "IW",
+            "orbit_direction": "ASCENDING",
+            "relative_orbit": 12345,
+            "product_type": "GRD",
+            "source_collection": "SYNTHETIC-COLLECTION",
+            "catalog_url": "https://example.invalid/catalog/SYNTHETIC-LATER",
+        }
+    )
+    document["scenes"].append(
+        {
+            "id": "SYNTHETIC-LAST",
+            "acquired_at": MULTI_SCENE_ACQUISITIONS[3],
+            "polarization": "VV",
+            "beam_mode": "IW",
+            "orbit_direction": "ASCENDING",
+            "relative_orbit": 12345,
+            "product_type": "GRD",
+            "source_collection": "SYNTHETIC-COLLECTION",
+            "catalog_url": "https://example.invalid/catalog/SYNTHETIC-LAST",
+        }
+    )
+    document["metrics"].update(region_count=1, total_changed_area_ha=1.25, scene_count=4)
+    document["demo_region_id"] = "synthetic-region-3"
+    return document
+
+
+def multi_scene_regions() -> dict[str, Any]:
+    return {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "id": "synthetic-region-3",
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [
+                        [
+                            [-60.40, -3.40],
+                            [-60.39, -3.40],
+                            [-60.39, -3.39],
+                            [-60.40, -3.39],
+                            [-60.40, -3.40],
+                        ]
+                    ],
+                },
+                "properties": {
+                    "region_id": "synthetic-region-3",
+                    "area_ha": 1.25,
+                    "change_db": -2.75,
+                    "magnitude_db": 2.75,
+                    "detected_at": MULTI_SCENE_ACQUISITIONS[1],
+                    "baseline_at": MULTI_SCENE_ACQUISITIONS[0],
+                    "observation_interval": {
+                        "start": MULTI_SCENE_ACQUISITIONS[0],
+                        "end": MULTI_SCENE_ACQUISITIONS[1],
+                    },
+                    "priority_score": 3.074593469062211,
+                    "priority_units": "dB sqrt(ha)",
+                    "priority_formula": "magnitude_db * sqrt(area_ha)",
+                    "persistence": {
+                        "status": "observed",
+                        "observations_after_detection": 1,
+                        "changed_observations": 1,
+                        "rate": 1.0,
+                    },
+                    "historical_anomaly": None,
+                    "explanation": (
+                        "Synthetic fixture region with one post-detection acquisition."
+                    ),
+                    "time_series": [
+                        {
+                            "acquired_at": stamp,
+                            "mean_backscatter_db": value,
+                            "change_from_baseline_db": change,
+                            "valid_fraction": 1.0,
+                        }
+                        for stamp, value, change in (
+                            (MULTI_SCENE_ACQUISITIONS[0], -8.0, None),
+                            (MULTI_SCENE_ACQUISITIONS[1], -10.75, -2.75),
+                            (MULTI_SCENE_ACQUISITIONS[2], -10.75, -2.75),
+                        )
+                    ],
+                },
+            }
+        ],
+    }
+
+
+def write_multi_scene_bundle(root: Path) -> Path:
+    bundle = root / "multi-scene"
+    bundle.mkdir(parents=True, exist_ok=True)
+    (bundle / "analysis.json").write_text(json.dumps(multi_scene_analysis(), indent=2))
+    (bundle / "regions.geojson").write_text(json.dumps(multi_scene_regions(), indent=2))
+    for key in ("before", "after", "change"):
+        _png(bundle / f"{key}.png")
+    return bundle

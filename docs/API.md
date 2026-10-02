@@ -113,7 +113,7 @@ The validated analysis document, served verbatim. The only addition is a
     "quantity": "sigma0",
     "units": "dB",
     "change_definition": "10*log10(after/before)",
-    "threshold_db": -2.0,
+    "threshold_db": 1.0,
     "minimum_area_ha": 1.0,
     "speckle_filter": "...",
     "registration": { "status": "...", "residual_pixels": null },
@@ -164,6 +164,9 @@ A WGS84 `FeatureCollection`, served verbatim. Feature order follows
 - `properties.priority_score` with `priority_units` (`dB sqrt(ha)`) and
   `priority_formula` (`magnitude_db * sqrt(area_ha)`)
 - `properties.persistence.{status,observations_after_detection,changed_observations,rate}`
+  where `observations_after_detection` counts real acquisitions *later than*
+  `detected_at`, and `rate` is
+  `changed_observations / observations_after_detection`
 - `properties.historical_anomaly`
 - `properties.explanation`
 - `properties.time_series[]` with `acquired_at`, `mean_backscatter_db`,
@@ -175,6 +178,13 @@ A WGS84 `FeatureCollection`, served verbatim. Feature order follows
 `time_series[].change_from_baseline_db` for the baseline acquisition. Render
 these as unavailable / not assessed; do not coerce to `0`, and do not present
 them as probabilities or causal statements — the API emits no such claims.
+
+**A two-date bundle cannot report observed persistence.** Detection happens at
+the later of the two acquisitions, so there is nothing after it to observe.
+Every region in such a bundle has `status: "not_evaluable"`,
+`observations_after_detection: 0`, `changed_observations: 0` and `rate: null`.
+`"observed"` requires at least one acquisition after `detected_at`, and the
+count can never exceed the number of scenes acquired after `detected_at`.
 
 ### `GET /api/regions/{region_id}`
 
@@ -230,6 +240,40 @@ as `error` / `503` rather than served partially.
 - `priority_units == "dB sqrt(ha)"` and
   `priority_formula == "magnitude_db * sqrt(area_ha)"`.
 
+**Persistence and priority**
+
+- `persistence.status == "observed"` requires
+  `observations_after_detection >= 1`, capped by the number of acquisitions
+  later than `detected_at`, with `changed_observations <= observations` and
+  `rate ~= changed_observations / observations_after_detection`.
+- `persistence.status == "not_evaluable"` requires zero observations, zero
+  changed observations and a `null` rate.
+- `priority_score ~= magnitude_db * sqrt(area_ha)`.
+
+**Detection gates**
+
+- `method.threshold_db` must be strictly positive. It is a threshold on the
+  **absolute** magnitude, i.e. the median of `|dB|`.
+- Each region must satisfy `magnitude_db >= threshold_db` and
+  `area_ha >= minimum_area_ha`.
+- `abs(change_db)` is deliberately **not** compared against `threshold_db`. The
+  signed median can cancel out inside a heterogeneous region while individual
+  pixels still fall below the threshold, so `change_db` near zero with a large
+  `magnitude_db` is a real, reportable situation and passes validation.
+
+**Tolerances for derived values**
+
+Derived numbers a producer may legitimately round are compared with
+`math.isclose`, never corrected:
+
+| Value | Tolerance |
+| --- | --- |
+| `persistence.rate` | `rel_tol=1e-3`, `abs_tol=0.01` |
+| `priority_score` | `rel_tol=1e-3`, `abs_tol=0.01` |
+| `magnitude_db` vs `threshold_db` | `abs_tol=0.01` dB |
+| `area_ha` vs `minimum_area_ha` | `abs_tol=0.01` ha |
+| area sums | `abs_tol=0.01` ha (see below) |
+
 **Numbers and dates**
 
 - Every number is finite: `NaN` and `Infinity` are rejected, whether they arrive
@@ -237,9 +281,15 @@ as `error` / `503` rather than served partially.
 - Areas are non-negative; `valid_fraction` and a `persistence.rate` are within
   `[0, 1]`; `changed_observations <= observations_after_detection`.
 - Dates are ISO 8601 **UTC** (`...Z` or `+00:00`); other offsets and
-  date-only strings are rejected.
-- At least two **separate** acquisition dates are required; duplicate dates are
-  rejected. Each region's `time_series` must be strictly ascending.
+  date-only strings are rejected. Comparisons are on instants, so `...Z` and
+  `...+00:00` for the same moment are equivalent.
+- At least two **separate** acquisition dates are required. Scene ids are
+  unique, scene acquisition times are unique, and `scenes` is sorted ascending
+  by `acquired_at`.
+- Every `time_series[].acquired_at` must be a scene acquisition, and each
+  region's series is strictly ascending and non-empty. **Missing points are
+  never fabricated**: a region observed at a subset of the acquisitions is
+  served with exactly those points, gaps and all.
 - `persistence.rate` is `null` exactly when `status == "not_evaluable"`; a
   `"observed"` status requires a rate. `historical_anomaly` must be present
   (may be `null`).
@@ -280,6 +330,11 @@ adjusted; every served number is the one the analysis declared.
   a numeric `[lon, lat]` pair inside the WGS84 ranges. `MultiPolygon` is
   supported; other geometry types are rejected.
 
+**Links**
+
+- `scenes[].catalog_url` must be an absolute `http` or `https` URL with a host.
+  `javascript:`, `data:`, `file:` and relative URLs are rejected.
+
 **Imagery safety**
 
 - `path` must be exactly `<key>.png` — a plain file name, no separators, no
@@ -289,6 +344,31 @@ adjusted; every served number is the one the analysis declared.
   regular file, and must begin with the PNG signature.
 - The same containment and PNG checks run again on every read, so a file swapped
   for a symlink after validation is refused with `503`.
+
+## Text handling: neutral JSON, not sanitisation
+
+The API is **not** an HTML sanitiser and does not pretend to be one. Text fields
+(`title`, `labels`, `explanation`, `limitations`, scene metadata) are neutral
+strings and are served **verbatim**, including any characters they happen to
+contain. A string that looks like markup is not made safe by the server, and
+blocking such strings would be arbitrary: it would mangle legitimate text
+without removing the actual requirement, which is that whoever renders these
+fields escapes them.
+
+What the API does do:
+
+- every text response is `application/json` and nothing declares `text/html`;
+- `X-Content-Type-Options: nosniff` is set on every response, so a browser will
+  not sniff a JSON body into an executable type;
+- the only value reflected back from client input is a region id in a `404`
+  `detail`, JSON-encoded and stripped of control characters.
+
+So: **render every text field as text.** In React use a text node or
+`dangerouslySetInnerHTML` is never warranted here; in a template engine keep
+autoescaping on. Do not `innerHTML`, `v-html` or `document.write` these fields.
+Review finding: a raw HTML-looking string in a JSON response is not itself an XSS
+vector when the consumer escapes it, and pretending otherwise by stripping tags
+server-side would be the wrong fix.
 
 ## Frontend integration
 
@@ -307,18 +387,21 @@ adjusted; every served number is the one the analysis declared.
    WGS84 (EPSG:4326) — map libraries usually want the same order, but check.
    Each `imagery.<key>.bounds` equals `analysis.bbox`, so the preview `<img>` and
    the map extent can be registered from the same numbers.
-9. Label the per-region times as observations, not events: `baseline_at` is the
+9. Render all text fields (`title`, `label`, `explanation`, `limitations`) as
+   text nodes with normal escaping. The server does not sanitise markup out of
+   them; see "Text handling" above.
+10. Label the per-region times as observations, not events: `baseline_at` is the
    baseline acquisition, `detected_at` is the acquisition where the radar
    difference was first seen, and `observation_interval` is the acquisition
    window it sits in. Do not label them "date of change" or "onset", and do not
    infer a change date between them.
-10. Display `change_db` and `magnitude_db` as two separate statistics (signed
+11. Display `change_db` and `magnitude_db` as two separate statistics (signed
     median vs median of absolute values). Do not derive one from the other, and
     do not assume `magnitude_db == abs(change_db)`.
-11. `analysis.metrics.analysis_area_ha` is the total analysis extent; report
+12. `analysis.metrics.analysis_area_ha` is the total analysis extent; report
     `valid_area_ha` and `not_evaluable_area_ha` as a breakdown of it rather than
     as separate totals.
-12. `analysis.limitations` and each `properties.explanation` are provided for
+13. `analysis.limitations` and each `properties.explanation` are provided for
     display as-is; do not synthesise additional claims.
 
 ## Tests

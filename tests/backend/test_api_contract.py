@@ -147,13 +147,15 @@ def test_null_two_date_metrics_are_preserved_not_zeroed(client: TestClient) -> N
     assert series[1]["change_from_baseline_db"] == -2.75
 
 
-def test_observed_persistence_region_is_unchanged(client: TestClient) -> None:
+def test_second_two_date_region_is_also_not_evaluable(client: TestClient) -> None:
+    # Review finding: a two-date bundle has nothing after the detection
+    # acquisition, so no region may claim observed persistence.
     props = client.get("/api/regions/synthetic-region-2").json()["properties"]
     assert props["persistence"] == {
-        "status": "observed",
-        "observations_after_detection": 2,
-        "changed_observations": 2,
-        "rate": 1.0,
+        "status": "not_evaluable",
+        "observations_after_detection": 0,
+        "changed_observations": 0,
+        "rate": None,
     }
     assert props["historical_anomaly"] is None
     assert props["priority_units"] == "dB sqrt(ha)"

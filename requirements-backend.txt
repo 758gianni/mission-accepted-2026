@@ -1,0 +1,11 @@
+# ForestWatch backend API dependencies.
+#
+# Verified against Python 3.12.3. Lower bounds are compatibility floors; the
+# versions in the trailing comments are what the test suite was run against.
+fastapi>=0.110,<1.0        # 0.142.2
+pydantic>=2.6,<3.0         # 2.13.5
+uvicorn>=0.27,<1.0         # 0.53.0
+
+# Test-only dependencies.
+pytest>=8.0                # 9.1.1
+httpx>=0.27                # 0.28.1  (required by fastapi.testclient)

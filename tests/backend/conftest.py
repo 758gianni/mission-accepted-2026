@@ -1,0 +1,308 @@
+"""Shared test fixtures for the ForestWatch backend API tests.
+
+All fixtures created here are SYNTHETIC and exist only for tests. They are
+written into pytest ``tmp_path`` directories and are never committed to
+``data/processed`` or any production/demo location.
+"""
+
+from __future__ import annotations
+
+import copy
+import json
+import struct
+import zlib
+from pathlib import Path
+from typing import Any
+
+import pytest
+from fastapi.testclient import TestClient
+
+from backend.app import create_app
+
+PNG_1X1_GRAY = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108020000"
+    "00807753de0000000c4944415408d763f8ffff3f0005fe02fea7e1e9e6"
+    "0000000049454e44ae426082"
+)
+
+SCHEMA_VERSION = 1
+
+BASE_ANALYSIS: dict[str, Any] = {
+    "schema_version": SCHEMA_VERSION,
+    "analysis_id": "synthetic-analysis-0001",
+    "title": "Synthetic test analysis (NOT real data)",
+    "bbox": [-60.5, -3.5, -60.2, -3.2],
+    "scenes": [
+        {
+            "id": "SYNTHETIC-BEFORE",
+            "acquired_at": "2026-01-15T10:00:00Z",
+            "polarization": "VV",
+            "beam_mode": "IW",
+            "orbit_direction": "ASCENDING",
+            "relative_orbit": 12345,
+            "product_type": "GRD",
+            "source_collection": "SYNTHETIC-COLLECTION",
+            "catalog_url": "https://example.invalid/catalog/SYNTHETIC-BEFORE",
+        },
+        {
+            "id": "SYNTHETIC-AFTER",
+            "acquired_at": "2026-03-20T10:00:00Z",
+            "polarization": "VV",
+            "beam_mode": "IW",
+            "orbit_direction": "ASCENDING",
+            "relative_orbit": 12345,
+            "product_type": "GRD",
+            "source_collection": "SYNTHETIC-COLLECTION",
+            "catalog_url": "https://example.invalid/catalog/SYNTHETIC-AFTER",
+        },
+    ],
+    "method": {
+        "quantity": "sigma0",
+        "units": "dB",
+        "change_definition": "10*log10(after/before)",
+        "threshold_db": -2.0,
+        "minimum_area_ha": 1.0,
+        "speckle_filter": "none (synthetic fixture)",
+        "registration": {"status": "synthetic", "residual_pixels": 0.0},
+        "preprocessing": ["synthetic-thermal-noise", "synthetic-unit-amplitude"],
+    },
+    "metrics": {
+        "region_count": 2,
+        "total_changed_area_ha": 4.5,
+        "valid_area_ha": 100.0,
+        "not_evaluable_area_ha": 2.0,
+        "scene_count": 2,
+    },
+    "imagery": {
+        "before": {
+            "path": "before.png",
+            "bounds": [-60.5, -3.5, -60.2, -3.2],
+            "label": "Synthetic before (2026-01-15)",
+        },
+        "after": {
+            "path": "after.png",
+            "bounds": [-60.5, -3.5, -60.2, -3.2],
+            "label": "Synthetic after (2026-03-20)",
+        },
+        "change": {
+            "path": "change.png",
+            "bounds": [-60.5, -3.5, -60.2, -3.2],
+            "label": "Synthetic change",
+        },
+    },
+    "demo_region_id": "synthetic-region-1",
+    "limitations": [
+        "Synthetic fixture data; not derived from any real satellite acquisition."
+    ],
+}
+
+BASE_REGIONS: dict[str, Any] = {
+    "type": "FeatureCollection",
+    "features": [
+        {
+            "type": "Feature",
+            "id": "synthetic-region-1",
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [
+                    [
+                        [-60.40, -3.40],
+                        [-60.39, -3.40],
+                        [-60.39, -3.39],
+                        [-60.40, -3.39],
+                        [-60.40, -3.40],
+                    ]
+                ],
+            },
+            "properties": {
+                "region_id": "synthetic-region-1",
+                "area_ha": 1.25,
+                "change_db": -2.75,
+                "magnitude_db": 2.75,
+                "detected_at": "2026-03-20T10:00:00Z",
+                "last_observed_unchanged_at": "2026-01-15T10:00:00Z",
+                "onset_interval": {
+                    "start": "2026-01-15T10:00:00Z",
+                    "end": "2026-03-20T10:00:00Z",
+                },
+                "priority_score": 3.07,
+                "priority_units": "dB sqrt(ha)",
+                "priority_formula": "magnitude_db * sqrt(area_ha)",
+                "persistence": {
+                    "status": "not_evaluable",
+                    "observations_after_detection": 0,
+                    "changed_observations": 0,
+                    "rate": None,
+                },
+                "historical_anomaly": None,
+                "explanation": (
+                    "Synthetic fixture region: magnitude_db and area_ha only; "
+                    "persistence and historical anomaly are unavailable, not zero."
+                ),
+                "time_series": [
+                    {
+                        "acquired_at": "2026-01-15T10:00:00Z",
+                        "mean_backscatter_db": -8.0,
+                        "change_from_baseline_db": None,
+                        "valid_fraction": 0.99,
+                    },
+                    {
+                        "acquired_at": "2026-03-20T10:00:00Z",
+                        "mean_backscatter_db": -10.75,
+                        "change_from_baseline_db": -2.75,
+                        "valid_fraction": 0.98,
+                    },
+                ],
+            },
+        },
+        {
+            "type": "Feature",
+            "id": "synthetic-region-2",
+            "geometry": {
+                "type": "MultiPolygon",
+                "coordinates": [
+                    [
+                        [
+                            [-60.30, -3.30],
+                            [-60.29, -3.30],
+                            [-60.29, -3.29],
+                            [-60.30, -3.29],
+                            [-60.30, -3.30],
+                        ]
+                    ],
+                    [
+                        [
+                            [-60.25, -3.25],
+                            [-60.24, -3.25],
+                            [-60.24, -3.24],
+                            [-60.25, -3.24],
+                            [-60.25, -3.25],
+                        ]
+                    ],
+                ],
+            },
+            "properties": {
+                "region_id": "synthetic-region-2",
+                "area_ha": 3.25,
+                "change_db": -1.5,
+                "magnitude_db": 1.5,
+                "detected_at": "2026-03-20T10:00:00Z",
+                "last_observed_unchanged_at": "2026-01-15T10:00:00Z",
+                "onset_interval": {
+                    "start": "2026-01-15T10:00:00Z",
+                    "end": "2026-03-20T10:00:00Z",
+                },
+                "priority_score": 2.71,
+                "priority_units": "dB sqrt(ha)",
+                "priority_formula": "magnitude_db * sqrt(area_ha)",
+                "persistence": {
+                    "status": "observed",
+                    "observations_after_detection": 2,
+                    "changed_observations": 2,
+                    "rate": 1.0,
+                },
+                "historical_anomaly": None,
+                "explanation": "Synthetic fixture region.",
+                "time_series": [
+                    {
+                        "acquired_at": "2026-01-15T10:00:00Z",
+                        "mean_backscatter_db": -9.0,
+                        "change_from_baseline_db": None,
+                        "valid_fraction": 1.0,
+                    },
+                    {
+                        "acquired_at": "2026-03-20T10:00:00Z",
+                        "mean_backscatter_db": -10.5,
+                        "change_from_baseline_db": -1.5,
+                        "valid_fraction": 1.0,
+                    },
+                ],
+            },
+        },
+    ],
+}
+
+
+def analysis_document() -> dict[str, Any]:
+    return copy.deepcopy(BASE_ANALYSIS)
+
+
+def regions_document() -> dict[str, Any]:
+    return copy.deepcopy(BASE_REGIONS)
+
+
+def _png(path: Path) -> None:
+    path.write_bytes(PNG_1X1_GRAY)
+
+
+def write_bundle(
+    root: Path,
+    analysis: dict[str, Any] | None = None,
+    regions: dict[str, Any] | None = None,
+    imagery: tuple[str, ...] = ("before", "after", "change"),
+) -> Path:
+    """Create a synthetic bundle under ``root`` and return the bundle dir."""
+    bundle = root / "current"
+    bundle.mkdir(parents=True, exist_ok=True)
+    analysis = analysis_document() if analysis is None else analysis
+    regions = regions_document() if regions is None else regions
+    (bundle / "analysis.json").write_text(json.dumps(analysis, indent=2))
+    (bundle / "regions.geojson").write_text(json.dumps(regions, indent=2))
+    for key in imagery:
+        _png(bundle / f"{key}.png")
+    return bundle
+
+
+@pytest.fixture
+def bundle_dir(tmp_path: Path) -> Path:
+    return write_bundle(tmp_path)
+
+
+@pytest.fixture
+def client(bundle_dir: Path) -> TestClient:
+    return TestClient(create_app(bundle_dir=bundle_dir))
+
+
+@pytest.fixture
+def empty_client(tmp_path: Path) -> TestClient:
+    missing = tmp_path / "does-not-exist"
+    return TestClient(create_app(bundle_dir=missing))
+
+
+def png_size(data: bytes) -> tuple[int, int]:
+    """Minimal PNG IHDR reader used to assert served image bytes are real PNG."""
+    assert data[:8] == b"\x89PNG\r\n\x1a\n", "served bytes are not a PNG"
+    assert data[12:16] == b"IHDR"
+    width, height = struct.unpack(">II", data[16:24])
+    return width, height
+
+
+def png_chunk_count(data: bytes) -> int:
+    count = 0
+    offset = 8
+    while offset < len(data):
+        (length,) = struct.unpack(">I", data[offset : offset + 4])
+        count += 1
+        offset += 12 + length
+    return count
+
+
+def reencode_png(width: int = 2, height: int = 2) -> bytes:
+    """Build a small valid PNG deterministically (test-only synthetic raster)."""
+
+    def chunk(tag: bytes, payload: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(payload))
+            + tag
+            + payload
+            + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
+        )
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0)
+    raw = b"".join(b"\x00" + bytes([(x + y) % 256 for x in range(width)]) for y in range(height))
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", zlib.compress(raw))
+        + chunk(b"IEND", b"")
+    )

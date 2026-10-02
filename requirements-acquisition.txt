@@ -1,0 +1,10 @@
+# Acquisition wrapper runtime + test dependencies.
+#
+# The upstream EODMS CLI is NOT on PyPI. It is installed from the pinned source
+# revision 464b94920e7faf28c84a6d31229ef0b2828a1479 into the ignored directory
+# .tools/eodms-cli by: bash acquisition/bootstrap_eodms_cli.sh
+# The wrapper imports that pinned CLI in-process, so its own dependencies
+# (eodms-py, py-eodms-rapi, fiona, shapely, geomet, ...) live in the bootstrap
+# virtualenv, not here.
+click==8.1.8
+pytest==8.3.4

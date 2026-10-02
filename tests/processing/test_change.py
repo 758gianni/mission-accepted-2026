@@ -887,6 +887,58 @@ def test_preview_bounds_are_real_wgs84_pixel_bounds(pair):
     assert minx > west and maxx < east, "the region must not fill the whole preview extent"
 
 
+def test_previews_share_one_pooled_stretch_so_global_shift_stays_visible(tmp_path):
+    # a known global shift of +3.0103 dB over the whole scene (linear power doubled everywhere)
+    before = stable_grid()
+    after = before * PATCH_RATIO
+    before_path = write_raster(tmp_path / "b.tif", before)
+    after_path = write_raster(tmp_path / "a.tif", after)
+    manifest = write_manifest(
+        tmp_path / "m.json",
+        scene(before_path, scene_id="A", acquired_at=BASELINE_ACQUIRED),
+        scene(after_path, scene_id="B", acquired_at=FOLLOWUP_ACQUIRED),
+    )
+    out_dir = str(tmp_path / "out")
+    analysis = run_change_detection(manifest, out_dir, 5.0, 0.0)
+    assert analysis["metrics"]["region_count"] == 0, "a global shift is not a localized change"
+
+    from PIL import Image
+
+    with Image.open(os.path.join(out_dir, "before.png")) as image:
+        before_pixels = np.asarray(image.convert("RGBA"), dtype="float64")
+    with Image.open(os.path.join(out_dir, "after.png")) as image:
+        after_pixels = np.asarray(image.convert("RGBA"), dtype="float64")
+
+    def mean_level(pixels):
+        valid = pixels[..., 3] == 255
+        assert valid.any()
+        return float(pixels[..., 0][valid].mean())
+
+    # one pooled stretch: the before scene sits at the dark end and the after scene at the bright
+    # end, so the +3.0103 dB global shift is plainly visible instead of being normalised away
+    before_level = mean_level(before_pixels)
+    after_level = mean_level(after_pixels)
+    assert before_level < 40.0, f"before preview should map to the dark end, got {before_level:.1f}"
+    assert after_level > 215.0, f"after preview should map to the bright end, got {after_level:.1f}"
+    assert after_level - before_level > 150.0
+
+    # the common scale is recorded, and both previews cite the same one
+    limitations = " ".join(analysis["limitations"])
+    assert "pooled stretch" in limitations
+    assert "2nd-98th percentile" in limitations
+    import re
+
+    pattern = r"pooled stretch (-?[0-9.]+) to (-?[0-9.]+) dB"
+    before_scale = re.search(pattern, analysis["imagery"]["before"]["label"])
+    after_scale = re.search(pattern, analysis["imagery"]["after"]["label"])
+    assert before_scale and after_scale
+    assert before_scale.group(0) == after_scale.group(0), "both previews must cite one common scale"
+    low, high = float(before_scale.group(1)), float(before_scale.group(2))
+    assert low == pytest.approx(10.0 * math.log10(BASE_PRICE), abs=0.02)
+    assert high == pytest.approx(10.0 * math.log10(BASE_PRICE * PATCH_RATIO), abs=0.02)
+    assert low < high
+
+
 def test_previews_are_really_resampled_not_placeholder(tmp_path):
     before = stable_grid()
     after = change_grid()
@@ -1070,6 +1122,80 @@ def test_region_ids_and_order_are_stable_across_runs(pair):
     scores = [f["properties"]["priority_score"] for f in first]
     assert scores == sorted(scores, reverse=True)
     assert all(f["id"] == f"R{index:03d}" for index, f in enumerate(first, start=1))
+
+
+def test_change_raster_has_real_nodata_metadata(tmp_path):
+    after = change_grid()
+    after[34:39, 2:6] = np.nan
+    manifest = write_manifest(
+        tmp_path / "m.json",
+        scene(write_raster(tmp_path / "b.tif", stable_grid()), scene_id="A", acquired_at=BASELINE_ACQUIRED),
+        scene(write_raster(tmp_path / "a.tif", after), scene_id="B", acquired_at=FOLLOWUP_ACQUIRED),
+    )
+    out_dir = str(tmp_path / "out")
+    analysis = run_change_detection(manifest, out_dir, 2.0, 0.0)
+    with rasterio.open(os.path.join(out_dir, "change.tif")) as src:
+        assert math.isnan(src.nodata), "change.tif must declare NaN nodata metadata"
+        raw = src.read(1)
+        masked = src.read(1, masked=True)
+        assert np.isnan(raw).any()
+        # rasterio masked reads must mask exactly the not-evaluable pixels and nothing else
+        assert np.array_equal(masked.mask, np.isnan(raw))
+        assert np.isfinite(masked.data[~masked.mask]).all()
+        assert not masked.mask[15:25, 14:23].any()
+        assert src.tags()["quantity"] == "change_db"
+        assert src.tags()["change_definition"] == "10*log10(after/before)"
+    # the masked count is exactly the unevaluable area, reported in the metrics
+    unevaluable_cells = int(masked.mask.sum())
+    assert unevaluable_cells * PIXEL_SIZE * PIXEL_SIZE / 10_000.0 == pytest.approx(
+        analysis["metrics"]["not_evaluable_area_ha"], rel=0.02
+    )
+
+
+def test_mask_raster_is_the_retained_region_mask_with_invalid_nodata(tmp_path):
+    # a large patch and a small one; the small patch is below the minimum area
+    after = change_grid(extra_small_patch=True)
+    manifest = write_manifest(
+        tmp_path / "m.json",
+        scene(write_raster(tmp_path / "b.tif", stable_grid()), scene_id="A", acquired_at=BASELINE_ACQUIRED),
+        scene(write_raster(tmp_path / "a.tif", after), scene_id="B", acquired_at=FOLLOWUP_ACQUIRED),
+    )
+    out_dir = str(tmp_path / "out")
+    analysis = run_change_detection(manifest, out_dir, 2.0, 6.0)
+    assert analysis["metrics"]["region_count"] == 1
+
+    with rasterio.open(os.path.join(out_dir, "mask.tif")) as src:
+        assert src.nodata == -1.0, "invalid must be a distinct nodata sentinel"
+        raw = src.read(1)
+        masked = src.read(1, masked=True)
+        semantics = src.tags()["mask_semantics"]
+        assert "retained region" in semantics
+        assert set(np.unique(raw).tolist()) == {-1.0, 0.0, 1.0}
+        # 0 is a valid class: unchanged evaluable ground must never be masked as nodata
+        assert int((raw == 0).sum()) > 0
+        assert not masked.mask[raw == 0].any()
+        assert masked.mask[raw == 1].sum() == 0
+        assert np.array_equal(masked.mask, raw == -1.0)
+        retained = raw == 1.0
+
+    # the mask is consistent with the published regions and the reported area: retained cells only
+    small_patch = np.zeros_like(retained)
+    small_patch[31:35, 31:35] = True  # grid offset of the small scene patch at rows/cols 30..35
+    assert not retained[small_patch].any(), "a region dropped by the minimum area filter is not retained"
+    one_cell_ha = PIXEL_SIZE * PIXEL_SIZE / 10_000.0
+    assert int(retained.sum()) * one_cell_ha == pytest.approx(
+        analysis["metrics"]["total_changed_area_ha"], rel=0.01
+    )
+    with open(os.path.join(out_dir, "regions.geojson"), "r", encoding="utf-8") as handle:
+        features = json.load(handle)["features"]
+    assert len(features) == 1
+    with rasterio.open(os.path.join(out_dir, "change.tif")) as src:
+        change = src.read(1)
+    # every retained cell is above the threshold, and no non-retained evaluable cell is
+    evaluable = np.isfinite(change)
+    assert (np.abs(change[retained]) >= analysis["method"]["threshold_db"]).all()
+    assert not np.isfinite(change[~evaluable]).any()
+    assert analysis["metrics"]["total_changed_area_ha"] <= analysis["metrics"]["valid_area_ha"]
 
 
 def test_published_bundle_is_complete_and_staging_leaves_nothing(tmp_path):

@@ -202,8 +202,8 @@ grid larger than 40,000,000 cells all abort before anything is published.
 
 | File | Content |
 | --- | --- |
-| `change.tif` | `float32` signed change in dB, nodata `NaN`, in the reference CRS |
-| `mask.tif` | `float32` 0/1 threshold mask (1 = detected change) |
+| `change.tif` | `float32` signed change in dB in the reference CRS, with real GeoTIFF nodata metadata: nodata is `NaN`, so `read(masked=True)` masks exactly the not-evaluable pixels |
+| `mask.tif` | `float32` **retained-region** mask with three classes and real nodata metadata: `1` = retained region, `0` = evaluable but not retained, `-1` = not evaluable (declared nodata) |
 | `before.png` | pre-event backscatter, dB, resampled to WGS84 |
 | `after.png` | post-event backscatter, dB, resampled to WGS84 |
 | `change.png` | signed change, dB, resampled to WGS84, diverging red/blue around 0 |
@@ -211,6 +211,23 @@ grid larger than 40,000,000 cells all abort before anything is published.
 | `analysis.json` | shared result bundle contract v1 |
 
 ### Previews are really resampled
+
+### mask.tif is the retained-region mask, not the raw threshold mask
+
+`mask.tif` is written **after** the minimum-area filter, so it is consistent with
+`regions.geojson` and with `metrics.total_changed_area_ha`, not merely with the
+`threshold_db` comparison:
+
+| Value | Meaning |
+| --- | --- |
+| `1` | inside a retained region (survived thresholding, labelling and the minimum area filter) |
+| `0` | evaluable, but not in a retained region (below threshold, or dropped by the minimum area filter) |
+| `-1` | not evaluable — declared GeoTIFF **nodata**, so masked reads hide it |
+
+Using `-1` rather than `0` as the invalid sentinel matters: unchanged ground is a
+valid class, so `0` must never be mistaken for "no data". A consumer reading the
+mask with `read(masked=True)` gets `mask == True` only where the observation was
+missing, and can count `1` cells directly against the reported area.
 
 `before.png`, `after.png`, and `change.png` are produced by warping each raster
 onto a **WGS84 pixel grid** and recording that grid's bounds in
@@ -360,7 +377,8 @@ Every run records its own `limitations` array, which always includes at least:
    began; the event time, if any, is unknown inside `observation_interval`;
 6. radiometric change can also arise from geometry, terrain, incidence angle,
    and processing effects, so magnitudes are not loss severity;
-7. the before/after preview stretch range is not an absolute radiometric scale;
+7. the pooled before/after preview stretch is not an absolute radiometric scale; it
+   is a relative rendering range shared by the two dates;
 8. the minimum area filter uses mean geodesic cell area, so the retained set can
    differ marginally from an exact per-cell area filter;
 9. pixels with a missing original observation are unevaluable rather than
@@ -391,7 +409,15 @@ amplitude rasters, complex rasters, missing CRS, degenerate transforms,
 incompatible pairs, wrong scene counts, duplicate dates, unsorted scenes, failed
 registration, bad schema versions, wrong source collections, non-overlapping
 footprints, and nonpositive/nonfinite parameters; finite-only numeric output;
-real WGS84 preview bounds shared by all three PNGs and equal to `analysis.bbox`;
+real WGS84 preview bounds shared by all three PNGs and equal to `analysis.bbox`; a
+known global +3.0103 dB shift over the whole scene, proving the pooled stretch
+keeps it visible (before maps to the dark end, after to the bright end) and that
+both previews cite the same recorded scale; real GeoTIFF nodata metadata, proved
+through `read(masked=True)` on `change.tif` (masks exactly the NaN cells) and on
+`mask.tif` (masks exactly the `-1` cells while valid `0` unchanged ground stays
+readable); and the retained-region mask semantics, proving a region dropped by the
+minimum area filter reads as `0` and that retained cells agree with
+`total_changed_area_ha`;
 contract v1 field-by-field consistency including `baseline_at` /
 `observation_interval` (and the absence of the pre-rename names), `not_evaluable`
 persistence, `null` anomaly, `null` `demo_region_id`, absence of

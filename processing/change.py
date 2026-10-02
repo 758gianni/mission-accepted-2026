@@ -671,17 +671,22 @@ def _warp_preview(values: np.ndarray, grid: Dict[str, Any], preview: Dict[str, A
     return warped
 
 
-def _stretch(warped: np.ndarray) -> Tuple[np.ndarray, float, float]:
-    valid = warped[np.isfinite(warped)]
-    if valid.size == 0:
-        return np.zeros(warped.shape, dtype="float64"), 0.0, 1.0
-    low, high = np.percentile(valid, [2.0, 98.0])
-    if not math.isfinite(float(low)) or not math.isfinite(float(high)) or high <= low:
-        low, high = float(valid.min()), float(valid.max())
+def pooled_stretch(*warped: np.ndarray) -> Tuple[List[np.ndarray], float, float]:
+    """One percentile stretch shared by every input, from the pooled valid dB samples.
+
+    A per-image stretch would map each scene onto the same full black-to-white range and so
+    would hide a real global brightness shift between the two dates. Pooling keeps the two
+    previews directly comparable to each other.
+    """
+    pooled = np.concatenate([values[np.isfinite(values)].ravel() for values in warped]) if warped else np.array([])
+    if pooled.size == 0:
+        return [np.zeros(values.shape, dtype="float64") for values in warped], 0.0, 1.0
+    low, high = (float(value) for value in np.percentile(pooled, [2.0, 98.0]))
+    if not math.isfinite(low) or not math.isfinite(high) or high <= low:
+        low, high = float(pooled.min()), float(pooled.max())
     if high <= low:
         high = low + 1.0
-    scaled = (warped - low) / (high - low)
-    return np.clip(scaled, 0.0, 1.0), float(low), float(high)
+    return [np.clip((values - low) / (high - low), 0.0, 1.0) for values in warped], low, high
 
 
 def _gray_rgba(scaled: np.ndarray) -> np.ndarray:
@@ -763,7 +768,19 @@ def _analysis_id(scenes: Sequence[Dict[str, Any]], threshold_db: float, min_area
     return "chg-" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
-def _write_raster(path: str, grid: Dict[str, Any], values: np.ndarray, nodata: float) -> None:
+#: mask.tif classes: retained region, evaluable but not retained, and not evaluable.
+MASK_RETAINED = 1.0
+MASK_NOT_RETAINED = 0.0
+MASK_INVALID = -1.0
+MASK_SEMANTICS = (
+    "retained-region mask: 1 = retained region (post minimum-area filter, consistent with "
+    "regions.geojson and metrics.total_changed_area_ha), 0 = evaluable but not retained, "
+    f"{int(MASK_INVALID)} = not evaluable (nodata: missing or unsupported observations)"
+)
+
+
+def _write_raster(path: str, grid: Dict[str, Any], values: np.ndarray, nodata: float, tags: Dict[str, Any]) -> None:
+    """Write a derived GeoTIFF with real nodata metadata, so masked reads honour it."""
     profile = {
         "driver": "GTiff",
         "height": grid["height"],
@@ -772,14 +789,14 @@ def _write_raster(path: str, grid: Dict[str, Any], values: np.ndarray, nodata: f
         "dtype": "float32",
         "crs": grid["crs"],
         "transform": grid["transform"],
+        "nodata": nodata,
         "tiled": False,
         "compress": "deflate",
         "predictor": 3,
     }
     with rasterio.open(path, "w", **profile) as dst:
-        dst.update_tags(quantity="change_db", units=UNITS, change_definition=CHANGE_DEFINITION)
-        dst.write(np.where(np.isfinite(values), values, nodata).astype("float32"), 1)
-        dst.update_tags(1, nodata=str(nodata))
+        dst.update_tags(**tags)
+        dst.write(np.asarray(values, dtype="float32"), 1)
 
 
 def run_change_detection(
@@ -837,6 +854,7 @@ def run_change_detection(
     min_pixels = 0 if area == 0 else int(math.ceil(area / cell_area_ha))
 
     candidates = []
+    retained_labels: List[int] = []
     for label_value in range(1, count + 1):
         component = labels == label_value
         pixel_count = int(np.count_nonzero(component))
@@ -849,6 +867,7 @@ def run_change_detection(
         if area_ha < area and area > 0:
             continue
         change_median, magnitude_median = region_change_statistics(change_db, component)
+        retained_labels.append(label_value)
         candidates.append(
             {
                 "geometry": geometry,
@@ -979,14 +998,16 @@ def run_change_detection(
     before_db_preview = _warp_preview(np.where(np.isfinite(baseline_filtered), np.log10(baseline_filtered) * 10.0, np.nan), grid, preview)
     after_db_preview = _warp_preview(np.where(np.isfinite(followup_filtered), np.log10(followup_filtered) * 10.0, np.nan), grid, preview)
     change_preview = _warp_preview(change_db, grid, preview)
-    before_scaled, before_low, before_high = _stretch(before_db_preview)
-    after_scaled, after_low, after_high = _stretch(after_db_preview)
+    (before_scaled, after_scaled), preview_low, preview_high = pooled_stretch(
+        before_db_preview, after_db_preview
+    )
     change_clip = threshold
     valid_change = change_preview[np.isfinite(change_preview)]
     if valid_change.size:
         change_clip = max(threshold, float(np.percentile(np.abs(valid_change), 98.0)))
 
-    labels_for_preview = np.where(thresholded, 1, 0).astype("uint8")
+    retained = np.isin(labels, np.asarray(retained_labels, dtype=labels.dtype))
+    mask_values = np.where(evaluable, np.where(retained, MASK_RETAINED, MASK_NOT_RETAINED), MASK_INVALID)
 
     analysis = {
         "schema_version": ANALYSIS_SCHEMA_VERSION,
@@ -1052,12 +1073,18 @@ def run_change_detection(
             "before": {
                 "path": "before.png",
                 "bounds": [float(value) for value in grid_wgs84],
-                "label": f"{baseline['id']} {baseline['date']} {baseline['quantity']} before (dB)",
+                "label": (
+                    f"{baseline['id']} {baseline['date']} {baseline['quantity']} before (dB), "
+                    f"pooled stretch {preview_low:.2f} to {preview_high:.2f} dB"
+                ),
             },
             "after": {
                 "path": "after.png",
                 "bounds": [float(value) for value in grid_wgs84],
-                "label": f"{followup['id']} {followup['date']} {followup['quantity']} after (dB)",
+                "label": (
+                    f"{followup['id']} {followup['date']} {followup['quantity']} after (dB), "
+                    f"pooled stretch {preview_low:.2f} to {preview_high:.2f} dB"
+                ),
             },
             "change": {
                 "path": "change.png",
@@ -1081,9 +1108,11 @@ def run_change_detection(
             "of any event; the event time, if any, is unknown inside observation_interval.",
             "Radiometric change can arise from geometry, terrain, incidence angle, processing, and "
             "speckle effects as well as surface change; magnitudes are not calibrated as loss severity.",
-            f"Scene backscatter previews are stretched to the 2nd-98th percentile of valid dB samples "
-            f"(before {before_low:.2f} to {before_high:.2f} dB, after {after_low:.2f} to "
-            f"{after_high:.2f} dB) and are not radiometrically comparable to any external scale.",
+            f"before.png and after.png share one pooled stretch, {preview_low:.2f} to "
+            f"{preview_high:.2f} dB (2nd-98th percentile of the pooled valid backscatter samples of "
+            "both scenes), so a global shift between the two dates stays visible as a brightness "
+            "difference and the two previews are comparable to each other, but not to any external "
+            "radiometric scale.",
             f"Minimum-area filtering uses mean geodesic cell area ({cell_area_ha:.6f} ha/cell), so the "
             "retained region set can differ marginally from an exact per-cell geodesic area filter.",
         ],
@@ -1093,9 +1122,32 @@ def run_change_detection(
 
     staging = _staging_dir(out_dir)
     try:
-        _write_raster(os.path.join(staging, "change.tif"), grid, change_db, float("nan"))
         _write_raster(
-            os.path.join(staging, "mask.tif"), grid, labels_for_preview.astype("float64"), 0.0
+            os.path.join(staging, "change.tif"),
+            grid,
+            change_db,
+            float("nan"),
+            {
+                "quantity": "change_db",
+                "units": UNITS,
+                "change_definition": CHANGE_DEFINITION,
+                "nodata_semantics": "NaN = not evaluable (missing or unsupported observations)",
+            },
+        )
+        _write_raster(
+            os.path.join(staging, "mask.tif"),
+            grid,
+            mask_values,
+            MASK_INVALID,
+            {
+                "quantity": "retained_region_mask",
+                "units": "class",
+                "mask_semantics": MASK_SEMANTICS,
+                "nodata_semantics": (
+                    f"{int(MASK_INVALID)} = not evaluable; 0 is a valid class (evaluable, not retained), "
+                    "so unchanged ground is never nodata"
+                ),
+            },
         )
         _write_png(os.path.join(staging, "before.png"), _gray_rgba(before_scaled))
         _write_png(os.path.join(staging, "after.png"), _gray_rgba(after_scaled))

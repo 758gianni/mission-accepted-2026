@@ -1,3 +1,5 @@
+import { Download } from 'lucide-react';
+
 const Header = () => {
 	return (
 		<header className='select-none px-5 pb-4 pt-5 sm:px-8 flex flex-wrap items-center justify-center gap-x-8 gap-y-3 border-b border-rule'>
@@ -11,8 +13,9 @@ const Header = () => {
 					<option>[Date 1] to [Date 2]</option>
 				</select>
 
-				<button type='button' onClick={() => {}} className='min-h-11 rounded border border-edge bg-panel px-4 text-[15px] hover:bg-selected'>
+				<button type='button' onClick={() => {}} className='button border-edge'>
 					Download clearings
+					<Download className='size-4 shrink-0' />
 				</button>
 			</div>
 		</header>

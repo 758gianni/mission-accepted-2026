@@ -1,4 +1,23 @@
+@import url('https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@500;600&display=swap');
 @import 'tailwindcss';
+
+@theme {
+	--color-paper: #e9ece6;
+	--color-panel: #f6f7f3;
+	--color-ink: #1c2620;
+	--color-muted: #56625b;
+	--color-body: #3b4740;
+	--color-rule: #c9cfc7;
+	--color-edge: #b9c1b8;
+	--color-selected: #e2e8df;
+	--color-loss: #b0306a;
+	--color-lossBright: #e14c8c;
+	--color-boundary: #163f52;
+	--color-radar: #3a3d3b;
+
+	--font-sans: 'Barlow', 'Helvetica Neue', Helvetica, sans-serif;
+	--font-cond: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+}
 
 body {
 	font-variant-numeric: tabular-nums;
@@ -18,4 +37,17 @@ input[type='checkbox'] {
 	* {
 		transition: none !important;
 	}
+}
+
+.button {
+	@apply select-none cursor-pointer
+    min-h-11 px-4
+    inline-flex items-center justify-center gap-2
+    rounded border border-edge
+    bg-panel hover:bg-selected
+    text-[15px]
+    transition-all duration-300 ease-in-out
+    outline-none ring-0
+    focus:outline-none focus:ring-0
+    active:outline-none active:ring-0;
 }

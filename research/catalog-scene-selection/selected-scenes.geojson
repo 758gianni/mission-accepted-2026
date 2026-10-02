@@ -3,7 +3,7 @@
   "swarmforge_selection": {
     "task": "catalog-scene-selection",
     "collection": "Radarsat-2_Tropical_Forest_Products",
-    "generated_utc": "2026-10-02T23:31:44Z",
+    "generated_utc": "2026-10-02T23:39:52Z",
     "note": "Full public STAC items (properties.auth:schemes removed because it advertises the EODMS login endpoint; no token, signature or query credential is present in any href). The product href is the unauthenticated public path returned by the STAC API and still requires a bearer token to download.",
     "primary_series": {
       "name": "sgf-w3-vvvh-asc-ro98-sabah-borneo",

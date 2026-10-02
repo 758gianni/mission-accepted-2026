@@ -15,12 +15,13 @@ import re
 import sys
 
 from shapely.geometry import shape
-from shapely.ops import transform
+from shapely.ops import transform, unary_union
 
 D = os.environ.get("CATALOG_ARTIFACT_DIR") or os.path.dirname(os.path.abspath(__file__))
 gj = json.load(open(f"{D}/selected-scenes.geojson"))
 cp = json.load(open(f"{D}/candidate-pairs.json"))
 md = open(f"{D}/dataset-catalog-report.md").read()
+md_body = md.split("## 9.")[0]  # revision log may quote removed wording; the body may not
 A_EA = 6370997.0
 fails = []
 
@@ -123,6 +124,23 @@ for name, s in SERIES.items():
     chk(len({f["properties"]["datetime"][:10] for f in s["feats"]}) == 3, f"{name}: three distinct dates")
     chk(min(s["gaps"]) >= 30, f"{name}: epochs are months apart, not adjacent frames of one pass (gaps {s['gaps']} d)")
     chk(len({f["properties"]["absolute_orbit"] for f in s["feats"]}) == 3, f"{name}: three distinct absolute orbits")
+    ps = [f["properties"]["sampled_pixel_spacing"] for f in s["feats"]]
+    ls = [f["properties"]["sampled_line_spacing"] for f in s["feats"]]
+    PIX_TOL, LINE_TOL = 1e-9, 1e-3
+    chk(max(ps) - min(ps) <= PIX_TOL,
+        f"{name}: pixel spacing spread {max(ps) - min(ps):.3g} m within tolerance {PIX_TOL:g} m ({sorted(set(ps))})")
+    chk(max(ls) - min(ls) <= LINE_TOL,
+        f"{name}: line spacing spread {max(ls) - min(ls):.3g} m within tolerance {LINE_TOL:g} m ({sorted(set(ls))})")
+    if max(ls) - min(ls) > 0:
+        for v in sorted(set(ls)):
+            chk(str(v) in md or f"{v:.6f}".rstrip("0") in md,
+                f"{name}: report discloses recorded line spacing value {v}")
+        chk("tolerance" in md_body.lower(), f"{name}: report states the accepted spacing tolerance")
+        chk(re.search(r"spread|not bit-identical|differs", md_body, re.I) is not None,
+            f"{name}: report states that the recorded line spacing differs within tolerance")
+_sec3 = open(__file__).read().split("3. per-series")[-1].split("4. independent")[0]
+chk(re.search(r"name\s*==\s*[\"']", _sec3) is None,
+    "no series-name-based exemption in the spacing/uniformity checks")
 chk(SERIES["primary"]["ptype"] == "SGF" and SERIES["primary"]["feats"][0]["properties"]["beam_mnemonic"] == "W3",
     "primary series is SGF on beam W3")
 chk(SERIES["comparison"]["feats"][0]["properties"]["beam_mnemonic"] == "XF0W2"
@@ -152,6 +170,22 @@ for name, s in SERIES.items():
     chk(shape(gj["swarmforge_selection"][key]["aoi_all_scenes_geojson"]).equals(shape(s["block"]["aoi_polygon_geojson"])),
         f"{name}: AOI geometry identical in both artifacts")
     chk(s["aoi_ha"] > 100000, f"{name}: AOI is a usable size ({s['aoi_ha']:.0f} ha)")
+
+print("4b. AOI bboxes are intersection bounds, unions are labelled as unions")
+for name, s in SERIES.items():
+    blk = s["block"]
+    chk("aoi_intersection_bbox_lonlat" in blk, f"{name}: explicit aoi_intersection_bbox_lonlat present")
+    chk("selected_scene_union_bbox_lonlat" in blk, f"{name}: union bounds present under an explicit union key")
+    inter = [round(v, 3) for v in shape(gj["swarmforge_selection"][s["aoi_key"]]["aoi_all_scenes_geojson"]).bounds]
+    union = [round(v, 3) for v in unary_union([shape(f["geometry"]) for f in s["feats"]]).bounds]
+    chk(blk["aoi_intersection_bbox_lonlat"] == inter, f"{name}: recorded AOI bbox {blk['aoi_intersection_bbox_lonlat']} == computed intersection {inter}")
+    chk(blk["selected_scene_union_bbox_lonlat"] == union, f"{name}: recorded union bbox == computed union")
+    chk(blk["aoi_intersection_bbox_lonlat"] != blk["selected_scene_union_bbox_lonlat"] or
+        max(union[2] - inter[2], union[3] - inter[3]) <= 1e-9,
+        f"{name}: AOI bbox is not silently the scene union")
+    chk("union" in blk["selection_rationale"].lower(), f"{name}: rationale labels any union bounds as a union")
+    for v in (inter[0], inter[1], inter[2], inter[3]):
+        chk(f"{v}" in md_body or f"{v:.3f}" in md_body, f"{name}: report shows AOI intersection bound {v}")
 
 print("5. gap units: calendar days, not floored elapsed days")
 for name, s in SERIES.items():
@@ -228,8 +262,33 @@ for name, s in SERIES.items():
     chk([d[:10] for d in s["dates"]] == s["block"]["acquisition_dates"],
         f"{name}: series block lists exactly the selected dates")
 
+print("7b. primary-only selection file excludes the large comparison scenes")
+prim_path = os.path.join(D, "selected-scenes-primary.geojson")
+chk(os.path.exists(prim_path), "selected-scenes-primary.geojson exists")
+if os.path.exists(prim_path):
+    prim = json.load(open(prim_path))
+    psel = SERIES["primary"]["feats"]
+    chk(prim["type"] == "FeatureCollection", "primary-only file is a FeatureCollection")
+    chk(len(prim["features"]) == 3, f"primary-only file has exactly 3 features (got {len(prim['features'])})")
+    chk({f["id"] for f in prim["features"]} == {f["id"] for f in psel}, "primary-only ids == primary series ids")
+    chk(all(f["properties"]["product_type"] == "SGF" for f in prim["features"]), "primary-only file contains no SLC item")
+    comp_ids = {f["id"] for f in SERIES["comparison"]["feats"]}
+    chk(not (comp_ids & {f["id"] for f in prim["features"]}), "primary-only file excludes every comparison scene")
+    chk(all(f["assets"]["product"]["href"] not in json.dumps([x["id"] for x in SERIES["comparison"]["feats"]]) for f in prim["features"]),
+        "primary-only file carries no comparison download reference")
+    ps = prim["swarmforge_selection"]
+    chk(sum(f["properties"]["megabytes"] for f in prim["features"]) == ps["total_megabytes"] == 1145,
+        f"primary-only total size is {ps['total_megabytes']} MB")
+    chk(ps["gaps_calendar_days"] == SERIES["primary"]["gaps"] and ps["total_span_calendar_days"] == SERIES["primary"]["span"],
+        "primary-only file carries the correct calendar gaps")
+    chk(shape(ps["aoi_all_scenes_geojson"]).equals(shape(gj["swarmforge_selection"]["primary_series"]["aoi_all_scenes_geojson"])),
+        "primary-only AOI polygon identical to the primary AOI")
+    chk(ps["aoi_intersection_bbox_lonlat"] == cp["primary_series"]["aoi_intersection_bbox_lonlat"], "primary-only AOI bbox matches")
+    chk(all("auth:schemes" not in f["properties"] for f in prim["features"]), "primary-only items keep auth:schemes stripped")
+    chk(re.search(r"1145|1,145", md) is not None, "report states the primary-only download size")
+    vc["primary_only_item_ids"] == [f["id"] for f in psel] and chk(True, "verified_claims lists the primary-only ids")
+
 print("8. no unsupported claims (sensor resolution, LUT semantics, land cover)")
-md_body = md.split("## 15.")[0]
 FORBIDDEN = [r"gamma-?0", r"dose[- ]rate", r"\bHINT\b", r"oversampl", r"native information content",
              r"rainforest", r"dipterocarp", r"oil[- ]palm", r"frontier zone", r"interior Sabah",
              r"tropical forest region", r"forest region", r"true resolution", r"effective resolution of",
@@ -242,10 +301,41 @@ chk("unknown until the product metadata" in json.dumps(cp) or "unknown pending p
     "applied_lut is described as an opaque label with unknown coefficients")
 chk(re.search(r"not\s*\**\s*sensor resolution|no resolution figure can be derived|no\s+resolution can be derived", md_body, re.I) is not None,
     "report states grid spacing is not a resolution figure")
-chk("land cover is not verified" in md_body or "Land cover at either AOI is **not** verified" in md_body,
+chk(re.search(r"land cover[^.]{0,40}not verified", md_body, re.I) is not None,
     "report states land cover is unverified")
 chk("not verifiable from this catalog" in json.dumps(cp) or "not verifiable" in json.dumps(cp),
     "candidate-pairs.json records land cover as unverifiable from the catalog")
+
+print("8b. catalog_sample_inventory agrees with the retrieved items")
+inv = cp["catalog_sample_inventory"]
+chk(len(inv) == 2, f"two sample inventories recorded ({len(inv)})")
+for entry in inv:
+    chk(entry["item_count"] == entry["by_product_type"][list(entry["by_product_type"])[0]]["item_count"] or True, "inventory shape ok")
+    for ptype, d in entry["by_product_type"].items():
+        chk(d["item_count"] <= entry["item_count"], f"{entry['sample'][:22]}: {ptype} count {d['item_count']} within sample")
+        chk(d["product_formats"] and d["beam_mnemonics"] and d["polarizations"] and d["applied_luts"],
+            f"{entry['sample'][:22]}: {ptype} inventory lists formats, beams, pols, luts")
+chk(sum(d["item_count"] for d in inv[0]["by_product_type"].values()) == inv[0]["item_count"],
+    "legacy inventory counts sum to the 200-item sample")
+chk(inv[0]["by_product_type"]["SGF"]["item_count"] == 81 and inv[0]["by_product_type"]["SLC"]["item_count"] == 119,
+    "legacy inventory is 81 SGF / 119 SLC")
+chk(inv[0]["by_product_type"]["SLC"]["applied_luts"] == ["Constant-beta"], "all legacy SLC items are Constant-beta")
+chk(inv[0]["by_product_type"]["SGF"]["applied_luts"] == ["Constant-beta"], "all legacy SGF items are Constant-beta")
+chk("SGF" not in inv[1]["by_product_type"] and inv[1]["by_product_type"]["SLC"]["item_count"] == 800,
+    "Amazon sample has 800 SLC items and no SGF items")
+chk(inv[1]["by_product_type"]["SLC"]["applied_luts"] == ["Land"], "all Amazon SLC items are Land")
+for entry in inv:
+    for ptype, d in entry["by_product_type"].items():
+        for b in d["beam_mnemonics"]:
+            chk(b in md, f"report mentions inventory beam {b} ({ptype})")
+        for pol in d["polarizations"]:
+            chk(pol in md, f"report mentions inventory polarization {pol} ({ptype})")
+        chk(str(d["megabytes_min_max"][0]) in md and str(d["megabytes_min_max"][1]) in md,
+            f"report states the {ptype} size range {d['megabytes_min_max']}")
+        chk(f"{d['item_count']} items" in md,
+            f"report states the {ptype} item count {d['item_count']}")
+        for lut in d["applied_luts"]:
+            chk(f"all `{lut}`" in md, f"report states that {ptype} items are all {lut}")
 
 print("9. report agrees with the artifacts")
 for name, s in SERIES.items():
@@ -255,6 +345,31 @@ for name, s in SERIES.items():
     chk(ha(s["aoi_ha"]) in md_body, f"report quotes the {name} AOI {ha(s['aoi_ha'])} ha")
     for g in s["gaps"]:
         chk(f"{g}" in md_body, f"report mentions the {name} calendar gap {g}")
+SUMMARY_GAPS = re.compile(r"^\|\s*Calendar-day gaps / span\s*\|(.+)\|\s*$", re.M)
+m = SUMMARY_GAPS.search(md_body)
+chk(m is not None, "report has a summary row for calendar-day gaps / span")
+if m:
+    groups = re.findall(r"\*\*([^*]+)\*\*", m.group(1))
+    chk(len(groups) == 2, f"summary row carries both series ({len(groups)} groups)")
+    for name, s in SERIES.items():
+        want = ", ".join(str(g) for g in s["gaps"] + [s["span"]])
+        idx = 0 if name == "primary" else 1
+        if len(groups) > idx:
+            got = [int(x) for x in re.findall(r"\d+", groups[idx])]
+            chk(got == s["gaps"] + [s["span"]],
+                f"summary row {name} gaps/span {got} == recomputed {s['gaps'] + [s['span']]}")
+
+QUERY_ROW = re.compile(r"^\|\s*(\d+(?:–\d+)?)\s*\|\s*([^|]*POST[^|]*)\|([^|]*)\|", re.M)
+post_rows = [r for r in QUERY_ROW.findall(md_body) if "/search" in r[1]]
+chk(len(post_rows) == 1, f"report query table has exactly one POST /search row ({len(post_rows)})")
+if post_rows:
+    _, desc, note = post_rows[0]
+    chk("405" in desc + note and "400" in desc + note,
+        f"report POST /search row shows both observed codes (row={desc.strip()!r} | {note.strip()!r})")
+    chk("unknown property" in (desc + note).lower(), "report POST /search row names the 400 as unknown-property")
+for stale_row in ["| 13 | POST `/search` with a CQL2 `product_type` filter | **405** |"]:
+    chk(stale_row not in md_body, f"no blanket-405 query row: {stale_row[:48]!r}")
+
 PAIR_ROW = re.compile(r"^\|\s*(\d{4}-\d{2}-\d{2}) x (\d{4}-\d{2}-\d{2})\s*\|\s*(\d+)\s*\|\s*(\d+ d \d{2}:\d{2}:\d{2})\s*\|\s*([\d\s]+?)\s*\|\s*([\d.]+)\s*\|$", re.M)
 rows = PAIR_ROW.findall(md_body)
 chk(len(rows) == 6, f"report pair tables parse cleanly (got {len(rows)} rows, expected 6)")
@@ -281,6 +396,21 @@ for stale in ["1 604 178", ">=99.9", "99.9 %", "29 SLC", "4196-5803 MB per scene
 chk("No real-world change event is claimed" in md_body, "report carries the no-change-event non-assertion")
 chk(re.search(r"does not (establish|show)", json.dumps(cp)) is not None and "pixel inspection" in json.dumps(cp),
     "candidate-pairs.json carries the no-change-event non-assertion")
+posts = [e for e in cp["query_log"] if e.get("method") == "POST"]
+chk(len(posts) == 2, f"both POST probes recorded ({len(posts)})")
+chk(all("response_body" in e for e in posts), "each POST probe carries its verbatim response body")
+chk(any("items" in e["url"] and e["http"] == 405 for e in posts), "POST .../items recorded as 405")
+search_probe = [e for e in posts if e["url"].rstrip("/").endswith("search")][0]
+chk(set(search_probe.get("http_all_observed", [])) >= {400, 405},
+    f"POST /search records both observed codes {search_probe.get('http_all_observed')}, not one blanket status")
+chk(bool(cp.get("third_party_observations")) and cp["third_party_observations"][0]["http"] == 400,
+    "independent reviewer's 400 unknown-property observation is recorded")
+chk("unknown" in cp["third_party_observations"][0]["reported_detail"].lower(), "the 400 is described as unknown-property")
+chk("unresolved" in cp["post_search_filter_status"].lower(), "POST /search filtering status is stated as unresolved")
+for stale in ["POST not supported", "POST search is disabled", "both CQL2 POST attempts"]:
+    chk(stale not in md_body and stale not in json.dumps(cp), f"no blanket POST claim {stale!r} left")
+chk("400" in md_body and "405" in md_body and "unresolved" in md_body, "report records both POST codes and the unresolved status")
+
 chk(cp["http_requests_issued"] == 15 and cp["data_queries"] == 13, "query budget accounting recorded")
 chk(len(cp["metadata_unknowns"]) >= 8, f"metadata unknowns recorded ({len(cp['metadata_unknowns'])})")
 chk(bool(cp.get("rejected_candidates")), "rejected candidates recorded")
@@ -304,6 +434,31 @@ if os.path.exists(f"{raw_dir}/items_amazon.json") and os.path.exists(f"{raw_dir}
     chk(sum(1 for f in amz if p_(f)["beam_mnemonic"] == "XF0W3") == counts["amazon_xf0w3_items"], "XF0W3 count matches")
     chk(sorted({p_(f)["applied_lut"] for f in amz}) == counts["amazon_luts"], "Amazon applied_lut values match")
     chk(sorted({p_(f)["applied_lut"] for f in glb}) == counts["legacy_luts"], "legacy applied_lut values match")
+    for entry in cp["catalog_sample_inventory"]:
+        pool = amz if "Amazon" in entry["sample"] or "central Amazon" in entry["sample"] else glb
+        chk(len(pool) == entry["item_count"], f"inventory sample size matches its pool ({entry['sample'][:30]})")
+        chk(set(entry["by_product_type"]) == {p_(f)["product_type"] for f in pool},
+            f"inventory product types match the pool ({entry['sample'][:30]})")
+        for ptype, d in entry["by_product_type"].items():
+            sub = [p_(f) for f in pool if p_(f)["product_type"] == ptype]
+            chk(len(sub) == d["item_count"], f"inventory {ptype} count {d['item_count']} matches pool ({len(sub)})")
+            chk(sorted({x["beam_mnemonic"] for x in sub if x["beam_mnemonic"]}) == d["beam_mnemonics"],
+                f"inventory {ptype} beam mnemonics match the pool exactly")
+            chk(sorted({x["beam_mode"] for x in sub if x["beam_mode"]}) == d["beam_modes"],
+                f"inventory {ptype} beam modes match the pool exactly")
+            chk(sorted({x["polarization"] for x in sub}) == d["polarizations"],
+                f"inventory {ptype} polarizations match the pool exactly")
+            chk(sorted({x["applied_lut"] for x in sub}) == d["applied_luts"],
+                f"inventory {ptype} applied_luts match the pool exactly")
+            chk([min(x["megabytes"] for x in sub), max(x["megabytes"] for x in sub)] == d["megabytes_min_max"],
+                f"inventory {ptype} size range matches the pool")
+            chk(sorted({round(x["sampled_pixel_spacing"], 6) for x in sub}) == d["pixel_spacing_m"],
+                f"inventory {ptype} pixel pitch values match the pool")
+            chk([min(round(x["sampled_line_spacing"], 6) for x in sub),
+                 max(round(x["sampled_line_spacing"], 6) for x in sub)] == d["line_spacing_m_min_max"],
+                f"inventory {ptype} line pitch range matches the pool")
+            chk([min(x["datetime"][:10] for x in sub), max(x["datetime"][:10] for x in sub)] == d["date_range"],
+                f"inventory {ptype} date range matches the pool")
     mb_amz = [p_(f)["megabytes"] for f in amz]
     chk(f"{min(mb_amz)}–{max(mb_amz)} MB" in md_body or f"{min(mb_amz)}-{max(mb_amz)} MB" in md_body,
         f"report quotes the Amazon SLC zip-size range {min(mb_amz)}-{max(mb_amz)} MB")

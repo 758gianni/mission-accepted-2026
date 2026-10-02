@@ -1,0 +1,438 @@
+{
+  "type": "FeatureCollection",
+  "swarmforge_selection": {
+    "task": "catalog-scene-selection",
+    "revision": 2,
+    "purpose": "PRIMARY SERIES ONLY. Download from this file alone: 3 SGF scenes, 1145 MB in total. The comparison SLC trio (16491 MB) lives in selected-scenes.geojson and is intentionally not repeated here so it cannot be pulled in by accident.",
+    "collection": "Radarsat-2_Tropical_Forest_Products",
+    "generated_utc": "2026-10-02T23:39:52Z",
+    "note": "Verbatim public STAC items with properties.auth:schemes removed; no token, signature or query credential in any href. The product href is the unauthenticated public path returned by the API and still requires a bearer token to download.",
+    "series_name": "sgf-w3-vvvh-asc-ro98-sabah-borneo",
+    "series_attributes": {
+      "product_type": "SGF",
+      "product_format": "GeoTIFF",
+      "beam_mode": "Wide3",
+      "beam_mnemonic": "W3",
+      "polarization": "VV VH",
+      "orbit_direction": "ascending",
+      "relative_orbit": 98,
+      "applied_lut": "Constant-beta",
+      "sampled_pixel_spacing_m": 12.5,
+      "sampled_line_spacing_m": 12.5,
+      "megabytes_per_scene": [
+        355,
+        395,
+        395
+      ]
+    },
+    "acquisition_dates": [
+      "2009-08-12",
+      "2009-11-16",
+      "2010-02-20"
+    ],
+    "gaps_calendar_days": [
+      96,
+      96
+    ],
+    "total_span_calendar_days": 192,
+    "aoi_intersection_bbox_lonlat": [
+      118.133,
+      4.868,
+      119.49,
+      6.089
+    ],
+    "aoi_all_scenes_geojson": {
+      "type": "Polygon",
+      "coordinates": [
+        [
+          [
+            119.490288092,
+            5.114950366
+          ],
+          [
+            118.3408136835765,
+            4.8679599666738484
+          ],
+          [
+            118.1330014279234,
+            5.84351260411082
+          ],
+          [
+            119.284519509,
+            6.088719733
+          ],
+          [
+            119.490288092,
+            5.114950366
+          ]
+        ]
+      ]
+    },
+    "aoi_all_scenes_ha": 1442704.4,
+    "total_megabytes": 1145,
+    "land_cover": "not verified by this catalog; only frame outlines and a browse thumbnail are exposed",
+    "change_event": "none asserted; no pixel data was retrieved or inspected"
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              118.128909393,
+              5.842641236
+            ],
+            [
+              118.336717795,
+              4.867079873
+            ],
+            [
+              119.490288092,
+              5.114950366
+            ],
+            [
+              119.284519509,
+              6.088719733
+            ],
+            [
+              118.128909393,
+              5.842641236
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "sar:frequency_band": "C",
+        "sar:polarizations": "VV VH",
+        "datetime": "2009-08-12T10:24:43+00:00",
+        "beam_mode": "Wide3",
+        "megabytes": 355,
+        "order_key": "RS2_OK133876_PK1168492_DK1128203_W3_20090812_102443_VV_VH_SGF",
+        "sar:beam_ids": [
+          "W3"
+        ],
+        "applied_lut": "Constant-beta",
+        "end_datetime": "2009-08-12T10:24:44+00:00",
+        "polarization": "VV VH",
+        "product_type": "SGF",
+        "beam_mnemonic": "W3",
+        "absolute_orbit": 8673,
+        "product_format": "GeoTIFF",
+        "sar:center_frequency": 5.405,
+        "sat:orbit_state": "ascending",
+        "sat:relative_orbit": 98,
+        "sampled_line_spacing": 12.5,
+        "sampled_pixel_spacing": 12.5,
+        "proj:code": "EPSG:4326"
+      },
+      "id": "4ff7a4b5-57b0-5cde-bd8b-300a6903c0e7",
+      "links": [
+        {
+          "href": "https://eodms-sgdot.nrcan-rncan.gc.ca/search",
+          "rel": "root",
+          "type": "application/geo+json",
+          "title": "The landing page of this server as JSON"
+        },
+        {
+          "href": "https://eodms-sgdot.nrcan-rncan.gc.ca/search/collections/Radarsat-2_Tropical_Forest_Products/items/4ff7a4b5-57b0-5cde-bd8b-300a6903c0e7",
+          "rel": "self",
+          "type": "application/geo+json",
+          "title": "this document"
+        },
+        {
+          "href": "https://eodms-sgdot.nrcan-rncan.gc.ca/search/collections/Radarsat-2_Tropical_Forest_Products",
+          "rel": "collection",
+          "type": "application/geo+json",
+          "title": "the collection document"
+        },
+        {
+          "href": "https://eodms-sgdot.nrcan-rncan.gc.ca/search/collections/Radarsat-2_Tropical_Forest_Products",
+          "rel": "parent",
+          "type": "application/geo+json",
+          "title": "the collection document"
+        }
+      ],
+      "stac_version": "1.0.0",
+      "stac_extensions": [
+        "https://stac-extensions.github.io/projection/v2.0.0/schema.json",
+        "https://stac-extensions.github.io/sat/v1.2.0/schema.json",
+        "https://stac-extensions.github.io/authentication/v1.1.0/schema.json",
+        "https://stac-extensions.github.io/sar/v1.3.1/schema.json"
+      ],
+      "collection": "Radarsat-2_Tropical_Forest_Products",
+      "assets": {
+        "product": {
+          "href": "https://eodms-sgdot.nrcan-rncan.gc.ca/dds/v1/item/EODMS/Radarsat-2_Tropical_Forest_Products/4ff7a4b5-57b0-5cde-bd8b-300a6903c0e7",
+          "title": "Radarsat-2 Product",
+          "description": "Radarsat-2 Product",
+          "type": "application/zip",
+          "roles": [
+            "data",
+            "metadata",
+            "archive"
+          ],
+          "auth:refs": [
+            "bearer"
+          ]
+        },
+        "thumbnail": {
+          "href": "https://eodms-sgdot.nrcan-rncan.gc.ca/image/v1/browse/4ff7a4b5-57b0-5cde-bd8b-300a6903c0e7",
+          "title": "Radarsat-2 Thumbnail",
+          "description": "Radarsat-2 Thumbnail",
+          "type": "image/png",
+          "roles": [
+            "thumbnail"
+          ]
+        }
+      },
+      "bbox": [
+        118.1289093927102,
+        4.867079872602928,
+        119.4902880921239,
+        6.088719732534585
+      ]
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              118.120849397,
+              5.900559027
+            ],
+            [
+              118.352309162,
+              4.81399566
+            ],
+            [
+              119.505781223,
+              5.061944619
+            ],
+            [
+              119.276599346,
+              6.14651332
+            ],
+            [
+              118.120849397,
+              5.900559027
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "sar:frequency_band": "C",
+        "sar:polarizations": "VV VH",
+        "datetime": "2009-11-16T10:24:48+00:00",
+        "beam_mode": "Wide3",
+        "megabytes": 395,
+        "order_key": "RS2_OK133876_PK1168508_DK1128219_W3_20091116_102448_VV_VH_SGF",
+        "sar:beam_ids": [
+          "W3"
+        ],
+        "applied_lut": "Constant-beta",
+        "end_datetime": "2009-11-16T10:24:48+00:00",
+        "polarization": "VV VH",
+        "product_type": "SGF",
+        "beam_mnemonic": "W3",
+        "absolute_orbit": 10045,
+        "product_format": "GeoTIFF",
+        "sar:center_frequency": 5.405,
+        "sat:orbit_state": "ascending",
+        "sat:relative_orbit": 98,
+        "sampled_line_spacing": 12.5,
+        "sampled_pixel_spacing": 12.5,
+        "proj:code": "EPSG:4326"
+      },
+      "id": "b8a8461b-0f00-5996-922e-76721012d178",
+      "links": [
+        {
+          "href": "https://eodms-sgdot.nrcan-rncan.gc.ca/search",
+          "rel": "root",
+          "type": "application/geo+json",
+          "title": "The landing page of this server as JSON"
+        },
+        {
+          "href": "https://eodms-sgdot.nrcan-rncan.gc.ca/search/collections/Radarsat-2_Tropical_Forest_Products/items/b8a8461b-0f00-5996-922e-76721012d178",
+          "rel": "self",
+          "type": "application/geo+json",
+          "title": "this document"
+        },
+        {
+          "href": "https://eodms-sgdot.nrcan-rncan.gc.ca/search/collections/Radarsat-2_Tropical_Forest_Products",
+          "rel": "collection",
+          "type": "application/geo+json",
+          "title": "the collection document"
+        },
+        {
+          "href": "https://eodms-sgdot.nrcan-rncan.gc.ca/search/collections/Radarsat-2_Tropical_Forest_Products",
+          "rel": "parent",
+          "type": "application/geo+json",
+          "title": "the collection document"
+        }
+      ],
+      "stac_version": "1.0.0",
+      "stac_extensions": [
+        "https://stac-extensions.github.io/projection/v2.0.0/schema.json",
+        "https://stac-extensions.github.io/sat/v1.2.0/schema.json",
+        "https://stac-extensions.github.io/authentication/v1.1.0/schema.json",
+        "https://stac-extensions.github.io/sar/v1.3.1/schema.json"
+      ],
+      "collection": "Radarsat-2_Tropical_Forest_Products",
+      "assets": {
+        "thumbnail": {
+          "href": "https://eodms-sgdot.nrcan-rncan.gc.ca/image/v1/browse/b8a8461b-0f00-5996-922e-76721012d178",
+          "title": "Radarsat-2 Thumbnail",
+          "description": "Radarsat-2 Thumbnail",
+          "type": "image/png",
+          "roles": [
+            "thumbnail"
+          ]
+        },
+        "product": {
+          "href": "https://eodms-sgdot.nrcan-rncan.gc.ca/dds/v1/item/EODMS/Radarsat-2_Tropical_Forest_Products/b8a8461b-0f00-5996-922e-76721012d178",
+          "title": "Radarsat-2 Product",
+          "description": "Radarsat-2 Product",
+          "type": "application/zip",
+          "roles": [
+            "data",
+            "metadata",
+            "archive"
+          ],
+          "auth:refs": [
+            "bearer"
+          ]
+        }
+      },
+      "bbox": [
+        118.120849397435,
+        4.813995659935657,
+        119.505781223016,
+        6.14651332012973
+      ]
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              118.120113713,
+              5.899603978
+            ],
+            [
+              118.351252671,
+              4.814707666
+            ],
+            [
+              119.504718022,
+              5.062695306
+            ],
+            [
+              119.275852552,
+              6.145599863
+            ],
+            [
+              118.120113713,
+              5.899603978
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "sar:frequency_band": "C",
+        "sar:polarizations": "VV VH",
+        "datetime": "2010-02-20T10:24:47+00:00",
+        "beam_mode": "Wide3",
+        "megabytes": 395,
+        "order_key": "RS2_OK133876_PK1168526_DK1128237_W3_20100220_102447_VV_VH_SGF",
+        "sar:beam_ids": [
+          "W3"
+        ],
+        "applied_lut": "Constant-beta",
+        "end_datetime": "2010-02-20T10:24:48+00:00",
+        "polarization": "VV VH",
+        "product_type": "SGF",
+        "beam_mnemonic": "W3",
+        "absolute_orbit": 11417,
+        "product_format": "GeoTIFF",
+        "sar:center_frequency": 5.405,
+        "sat:orbit_state": "ascending",
+        "sat:relative_orbit": 98,
+        "sampled_line_spacing": 12.5,
+        "sampled_pixel_spacing": 12.5,
+        "proj:code": "EPSG:4326"
+      },
+      "id": "8178671e-0090-5be2-ad28-a176e4358b34",
+      "links": [
+        {
+          "href": "https://eodms-sgdot.nrcan-rncan.gc.ca/search",
+          "rel": "root",
+          "type": "application/geo+json",
+          "title": "The landing page of this server as JSON"
+        },
+        {
+          "href": "https://eodms-sgdot.nrcan-rncan.gc.ca/search/collections/Radarsat-2_Tropical_Forest_Products/items/8178671e-0090-5be2-ad28-a176e4358b34",
+          "rel": "self",
+          "type": "application/geo+json",
+          "title": "this document"
+        },
+        {
+          "href": "https://eodms-sgdot.nrcan-rncan.gc.ca/search/collections/Radarsat-2_Tropical_Forest_Products",
+          "rel": "collection",
+          "type": "application/geo+json",
+          "title": "the collection document"
+        },
+        {
+          "href": "https://eodms-sgdot.nrcan-rncan.gc.ca/search/collections/Radarsat-2_Tropical_Forest_Products",
+          "rel": "parent",
+          "type": "application/geo+json",
+          "title": "the collection document"
+        }
+      ],
+      "stac_version": "1.0.0",
+      "stac_extensions": [
+        "https://stac-extensions.github.io/projection/v2.0.0/schema.json",
+        "https://stac-extensions.github.io/sat/v1.2.0/schema.json",
+        "https://stac-extensions.github.io/authentication/v1.1.0/schema.json",
+        "https://stac-extensions.github.io/sar/v1.3.1/schema.json"
+      ],
+      "collection": "Radarsat-2_Tropical_Forest_Products",
+      "assets": {
+        "thumbnail": {
+          "href": "https://eodms-sgdot.nrcan-rncan.gc.ca/image/v1/browse/8178671e-0090-5be2-ad28-a176e4358b34",
+          "title": "Radarsat-2 Thumbnail",
+          "description": "Radarsat-2 Thumbnail",
+          "type": "image/png",
+          "roles": [
+            "thumbnail"
+          ]
+        },
+        "product": {
+          "href": "https://eodms-sgdot.nrcan-rncan.gc.ca/dds/v1/item/EODMS/Radarsat-2_Tropical_Forest_Products/8178671e-0090-5be2-ad28-a176e4358b34",
+          "title": "Radarsat-2 Product",
+          "description": "Radarsat-2 Product",
+          "type": "application/zip",
+          "roles": [
+            "data",
+            "metadata",
+            "archive"
+          ],
+          "auth:refs": [
+            "bearer"
+          ]
+        }
+      },
+      "bbox": [
+        118.1201137129504,
+        4.814707666206433,
+        119.5047180222664,
+        6.14559986333675
+      ]
+    }
+  ]
+}

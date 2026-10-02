@@ -86,8 +86,10 @@ GEOD = Geod(ellps="WGS84")
 SPECKLE_FILTER = (
     "3x3 box mean filter applied in linear power with nodata-aware support: "
     "each output sample is the mean of the valid (finite, positive) neighbours "
-    f"in its 3x3 window, and is undefined unless at least {MIN_VALID_NEIGHBOURS} "
-    "of 9 window samples are valid"
+    f"in its 3x3 window, and is undefined unless the original centre pixel is itself "
+    f"valid and at least {MIN_VALID_NEIGHBOURS} of 9 window samples are valid; the "
+    "warped grid is remasked so a missing original sample is never replaced by an "
+    "interpolated neighbour value"
 )
 
 
@@ -467,8 +469,15 @@ def build_reference_grid(baseline: Dict[str, Any], followup: Dict[str, Any]) -> 
 
 
 def warp_to_grid(info: Dict[str, Any], grid: Dict[str, Any]) -> np.ndarray:
-    """Reproject + crop one prepared scene onto the reference grid (grid alignment only)."""
+    """Reproject + crop one prepared scene onto the reference grid (grid alignment only).
+
+    The warp is followed by a remask: bilinear resampling blends neighbours into cells whose
+    centre lands on a nodata source pixel, which would manufacture an observation where the
+    source has none. The source validity mask is therefore resampled with nearest-neighbour
+    resampling and applied to the warped values, so a missing original sample stays missing.
+    """
     destination = np.full((grid["height"], grid["width"]), np.nan, dtype="float64")
+    validity = np.full((grid["height"], grid["width"]), np.nan, dtype="float64")
     src_nodata = info["nodata"]
     if src_nodata is None or not math.isfinite(float(src_nodata)):
         src_nodata = None
@@ -485,6 +494,22 @@ def warp_to_grid(info: Dict[str, Any], grid: Dict[str, Any]) -> np.ndarray:
             resampling=Resampling.bilinear,
             num_threads=1,
         )
+        if src.nodata is not None and math.isfinite(float(src.nodata)):
+            source_valid = (src.read_masks(1) > 0).astype("float64")
+            reproject(
+                source=source_valid,
+                destination=validity,
+                src_transform=src.transform,
+                src_crs=src.crs,
+                src_nodata=0.0,
+                dst_transform=grid["transform"],
+                dst_crs=grid["crs"],
+                dst_nodata=np.nan,
+                resampling=Resampling.nearest,
+                num_threads=1,
+            )
+    if np.isfinite(validity).any():
+        destination = np.where(validity > 0.5, destination, np.nan)
     return destination
 
 
@@ -492,13 +517,19 @@ def warp_to_grid(info: Dict[str, Any], grid: Dict[str, Any]) -> np.ndarray:
 # filtering and change
 # --------------------------------------------------------------------------- #
 def nodata_mean_filter(raster: np.ndarray, min_valid: int = MIN_VALID_NEIGHBOURS) -> np.ndarray:
-    """3x3 mean of valid linear-power samples; undefined where support is too small."""
+    """3x3 mean of valid linear-power samples, never defined where the centre sample is missing.
+
+    A sample is defined only when the original (pre-filter) pixel itself is a valid observation
+    *and* at least `min_valid` of its 9 window samples are valid. Without the centre requirement
+    the kernel would invent a value at a nodata pixel from its neighbours, which fabricates an
+    observation exactly where the data is missing.
+    """
     valid = np.isfinite(raster) & (raster > 0)
     weights = np.ones((3, 3), dtype="float64")
     counts = ndimage.convolve(valid.astype("float64"), weights, mode="constant", cval=0.0)
     totals = ndimage.convolve(np.where(valid, raster, 0.0), weights, mode="constant", cval=0.0)
     filtered = np.full(raster.shape, np.nan, dtype="float64")
-    supported = counts >= float(min_valid)
+    supported = (counts >= float(min_valid)) & valid
     np.divide(totals, counts, out=filtered, where=supported)
     filtered[~(np.isfinite(filtered) & (filtered > 0))] = np.nan
     return filtered
@@ -995,6 +1026,9 @@ def run_change_detection(
                 "the overlapping footprints at the baseline pixel size; this is grid alignment only and "
                 "does not measure or correct geometric registration.",
                 f"Speckle reduction: {SPECKLE_FILTER}.",
+                "Source validity was resampled with nearest-neighbour resampling and reapplied after "
+                "reprojection, so bilinear interpolation cannot create an observation at a nodata "
+                "pixel or at the edge of a scene's valid mask.",
                 "Linear-power means converted to backscatter dB (10*log10) only where both scenes have "
                 "valid support; all other pixels are nodata and excluded from evaluation.",
                 "Thresholded absolute dB change, labelled components with 8-neighbour connectivity, "

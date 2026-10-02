@@ -200,6 +200,39 @@ def test_speckle_filter_uses_only_valid_neighbours():
     assert np.isnan(filtered[0, 0])
 
 
+def test_speckle_filter_never_fills_a_missing_centre():
+    # regression: at 9d27d506 this array produced filtered[2,2] == 1.0, inventing an
+    # observation at a nodata pixel from its neighbours
+    raster = np.ones((5, 5))
+    raster[2, 2] = np.nan
+    filtered = nodata_mean_filter(raster)
+    assert np.isnan(filtered[2, 2]), "a missing original centre must stay unevaluable"
+    # the eight valid centres around the hole keep their 8-of-9 window means
+    assert np.isnan(filtered[1:4, 1:4]).sum() == 1
+    assert np.allclose(filtered[1:4, 1:4][np.isfinite(filtered[1:4, 1:4])], 1.0)
+
+    # a hole of nodata: every cell inside it has a missing centre, so none is evaluable
+    hole = np.ones((5, 5))
+    hole[1:4, 1:4] = np.nan
+    assert np.isnan(nodata_mean_filter(hole)[1:4, 1:4]).all()
+
+    # the rule is not over-strict: a valid centre with nodata neighbours is still defined and
+    # the mean uses only the valid samples
+    partial = np.ones((5, 5))
+    partial[2, 1] = np.nan
+    partial[1, 2] = np.nan
+    assert nodata_mean_filter(partial)[2, 2] == pytest.approx(1.0)
+
+    # and a valid centre whose window keeps exactly the documented minimum support is defined
+    support = np.ones((5, 5))
+    support[0, 0] = np.nan
+    support[0, 1] = np.nan
+    support[1, 0] = np.nan
+    support[1, 1] = np.nan
+    support[0, 2] = np.nan
+    assert np.isfinite(nodata_mean_filter(support)[2, 2])
+
+
 def test_speckle_filter_ignores_nodata_magnitude():
     raster = np.full((5, 5), 4.0)
     raster[2, 2] = 1000.0
@@ -407,6 +440,133 @@ def test_filter_edge_support_keeps_evaluable_near_scene_border(tmp_path):
     assert properties["area_ha"] == pytest.approx(62 * PIXEL_SIZE * PIXEL_SIZE / 10_000.0, rel=0.02)
     assert properties["time_series"][1]["valid_fraction"] > 0.95
     assert properties["time_series"][1]["valid_fraction"] == pytest.approx(1.0)
+
+
+def test_isolated_nodata_hole_stays_unevaluable_end_to_end(tmp_path):
+    # a single missing observation inside a changed patch: it must not be reconstructed from
+    # its neighbours, and it must leave the change raster and the area metrics as nodata
+    plain_after = change_grid()
+    plain_manifest = write_manifest(
+        tmp_path / "plain.json",
+        scene(write_raster(tmp_path / "pb.tif", stable_grid()), scene_id="A", acquired_at=BASELINE_ACQUIRED),
+        scene(write_raster(tmp_path / "pa.tif", plain_after), scene_id="B", acquired_at=FOLLOWUP_ACQUIRED),
+    )
+    plain = run_change_detection(plain_manifest, str(tmp_path / "plain"), 2.0, 0.0)
+
+    holed_after = change_grid()
+    holed_after[20, 18] = np.nan  # scene coordinates: inside the patch core
+    holed_manifest = write_manifest(
+        tmp_path / "holed.json",
+        scene(write_raster(tmp_path / "hb.tif", stable_grid()), scene_id="A", acquired_at=BASELINE_ACQUIRED),
+        scene(write_raster(tmp_path / "ha.tif", holed_after), scene_id="B", acquired_at=FOLLOWUP_ACQUIRED),
+    )
+    out_dir = str(tmp_path / "holed")
+    holed = run_change_detection(holed_manifest, out_dir, 2.0, 0.0)
+
+    one_cell_ha = PIXEL_SIZE * PIXEL_SIZE / 10_000.0
+    # exactly one cell leaves the detected region, the valid area and the changed area
+    assert holed["metrics"]["total_changed_area_ha"] == pytest.approx(
+        plain["metrics"]["total_changed_area_ha"] - one_cell_ha, rel=1e-3
+    )
+    assert holed["metrics"]["valid_area_ha"] == pytest.approx(
+        plain["metrics"]["valid_area_ha"] - one_cell_ha, rel=1e-3
+    )
+    assert holed["metrics"]["not_evaluable_area_ha"] == pytest.approx(
+        plain["metrics"]["not_evaluable_area_ha"] + one_cell_ha, rel=1e-3
+    )
+    assert holed["metrics"]["valid_area_ha"] + holed["metrics"]["not_evaluable_area_ha"] == pytest.approx(
+        holed["metrics"]["analysis_area_ha"], rel=1e-9
+    )
+    assert holed["metrics"]["region_count"] == 1
+
+    with rasterio.open(os.path.join(out_dir, "change.tif")) as src:
+        change = src.read(1)
+        # the missing observation is nodata in the published change raster ...
+        assert np.isnan(change[21, 19]), "the missing original centre must not be reconstructed"
+        # ... and its neighbours keep the untouched 3.0103 dB, because the nodata neighbour is
+        # excluded from the kernel mean rather than treated as a zero backscatter
+        assert change[21, 18] == pytest.approx(3.010299956639812, abs=1e-4)
+        assert change[20, 19] == pytest.approx(3.010299956639812, abs=1e-4)
+    with rasterio.open(os.path.join(out_dir, "mask.tif")) as src:
+        assert int((src.read(1) == 1).sum()) == PATCH_CELLS - 1
+
+
+def test_nodata_block_hole_is_excluded_from_change_and_area(tmp_path):
+    after = change_grid()
+    after[19:22, 17:20] = np.nan  # 3x3 missing block in the patch core
+    manifest = write_manifest(
+        tmp_path / "m.json",
+        scene(write_raster(tmp_path / "b.tif", stable_grid()), scene_id="A", acquired_at=BASELINE_ACQUIRED),
+        scene(write_raster(tmp_path / "a.tif", after), scene_id="B", acquired_at=FOLLOWUP_ACQUIRED),
+    )
+    out_dir = str(tmp_path / "out")
+    analysis = run_change_detection(manifest, out_dir, 2.0, 0.0)
+    one_cell_ha = PIXEL_SIZE * PIXEL_SIZE / 10_000.0
+    assert analysis["metrics"]["total_changed_area_ha"] == pytest.approx(
+        PATCH_AREA_HA - 9 * one_cell_ha, rel=1e-3
+    )
+    with open(os.path.join(out_dir, "regions.geojson"), "r", encoding="utf-8") as handle:
+        feature = json.load(handle)["features"][0]
+    geometry = shape(feature["geometry"])
+    assert len(geometry.interiors) == 1, "the missing block is preserved as a hole"
+    assert geodesic_area_ha(LinearRing(geometry.interiors[0].coords)) == pytest.approx(
+        9 * one_cell_ha, rel=0.02
+    )
+    with rasterio.open(os.path.join(out_dir, "change.tif")) as src:
+        change = src.read(1)
+        assert np.isnan(change[20:23, 18:21]).all()
+        # the cells around the block are still evaluable: their centres exist and their windows
+        # keep 8 of 9 valid samples
+        assert np.isfinite(change[19, 18:21]).all()
+        assert np.isfinite(change[23, 18:21]).all()
+
+
+def test_scene_mask_edge_is_never_interpolated_into(tmp_path):
+    # a nodata stripe along the left edge of the followup scene: bilinear resampling would pull
+    # neighbour values into those cells, so the post-warp remask must keep them unevaluable
+    plain_manifest = write_manifest(
+        tmp_path / "plain.json",
+        scene(write_raster(tmp_path / "pb.tif", stable_grid()), scene_id="A", acquired_at=BASELINE_ACQUIRED),
+        scene(write_raster(tmp_path / "pa.tif", change_grid()), scene_id="B", acquired_at=FOLLOWUP_ACQUIRED),
+    )
+    plain = run_change_detection(plain_manifest, str(tmp_path / "plain"), 2.0, 0.0)
+    after = change_grid()
+    after[:, :3] = np.nan
+    manifest = write_manifest(
+        tmp_path / "m.json",
+        scene(write_raster(tmp_path / "b.tif", stable_grid()), scene_id="A", acquired_at=BASELINE_ACQUIRED),
+        scene(write_raster(tmp_path / "a.tif", after), scene_id="B", acquired_at=FOLLOWUP_ACQUIRED),
+    )
+    out_dir = str(tmp_path / "out")
+    analysis = run_change_detection(manifest, out_dir, 2.0, 0.0)
+    with rasterio.open(os.path.join(out_dir, "change.tif")) as src:
+        change = src.read(1)
+        # the grid is offset by one snapped cell, so the three nodata scene columns land on
+        # reference-grid columns 1..3
+        assert np.isnan(change[:, 1:4]).all(), "the valid-mask edge must stay unevaluable"
+        assert np.isfinite(change[:, 4:]).any()
+    with open(os.path.join(out_dir, "regions.geojson"), "r", encoding="utf-8") as handle:
+        features = json.load(handle)["features"]
+    assert analysis["metrics"]["region_count"] == len(features) == 1
+    # the patch is away from the stripe, so its detected area is unchanged
+    assert analysis["metrics"]["total_changed_area_ha"] == pytest.approx(PATCH_AREA_HA, rel=0.02)
+    assert analysis["metrics"]["valid_area_ha"] + analysis["metrics"]["not_evaluable_area_ha"] == pytest.approx(
+        analysis["metrics"]["analysis_area_ha"], rel=1e-9
+    )
+    # the three masked columns leave the evaluable area even though their windows have ample
+    # valid support, because their centres are missing
+    stripe_cells_ha = 3 * GRID_SIZE * PIXEL_SIZE * PIXEL_SIZE / 10_000.0
+    assert analysis["metrics"]["valid_area_ha"] == pytest.approx(
+        plain["metrics"]["valid_area_ha"] - stripe_cells_ha, rel=2e-3
+    )
+    assert analysis["metrics"]["not_evaluable_area_ha"] > plain["metrics"]["not_evaluable_area_ha"]
+    # the outside-of-footprint ring of the snapped grid is never evaluable either
+    with rasterio.open(os.path.join(out_dir, "change.tif")) as src:
+        change = src.read(1)
+        assert np.isnan(change[0, :]).all()
+        assert np.isnan(change[-1, :]).all()
+        assert np.isnan(change[:, 0]).all()
+        assert np.isnan(change[:, -1]).all()
 
 
 def test_nodata_only_scene_is_rejected(tmp_path):

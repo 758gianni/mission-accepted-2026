@@ -143,18 +143,30 @@ the provenance rules below forbid.
 1. **Common reference grid.** The two footprints are intersected in WGS84, the
    intersection is expressed in the baseline scene CRS, and the bounds are
    snapped outward to the baseline pixel size. Each scene is reprojected and
-   cropped onto that grid (bilinear, nodata-aware).
+   cropped onto that grid (bilinear, nodata-aware), then **remasked**: the
+   source validity mask is resampled with nearest-neighbour resampling and
+   reapplied, so bilinear interpolation cannot blend neighbours into a cell
+   whose centre lands on a nodata source pixel. A missing observation stays
+   missing after reprojection.
    *This is grid alignment only. It is not, and is never reported as, a
    measurement or correction of geometric registration.* Residual
    coregistration error comes from the manifest's `registration` evidence and is
    carried straight into the change rasters.
-2. **Speckle filter.** A 3x3 mean in **linear power**, nodata-aware: each output
-   sample is the mean of the valid (finite, positive) neighbours in its window
-   and is undefined unless at least 5 of the 9 window samples are valid. This is
-   the `method.speckle_filter` string in the bundle.
+2. **Speckle filter.** A 3x3 mean in **linear power**, nodata-aware. An output
+   sample is defined only when **the original centre pixel is itself a valid
+   observation** *and* at least 5 of the 9 window samples are valid; the value is
+   the mean of the valid (finite, positive) window samples. The centre
+   requirement is what stops the kernel from *inventing* a value at a nodata
+   pixel out of its neighbours, which would fabricate a measurement exactly
+   where the data is missing (regression-tested; at commit 9d27d506 a 5x5 array
+   of ones with a single NaN centre returned 1.0 there). This is the
+   `method.speckle_filter` string in the bundle.
 3. **Change.** `change_db = 10 * log10(after / before)` in dB, evaluated only
-   where both filtered scenes are valid. Every other pixel is nodata and is
-   *not evaluable*, never zero.
+   where both filtered scenes are valid, which now also means both *original*
+   pixels exist. Every other pixel is nodata and is *not evaluable*, never zero.
+   Neighbours of a missing pixel are unaffected: the nodata neighbour is dropped
+   from the kernel mean rather than treated as zero backscatter, so a cell with a
+   valid centre and 8 of 9 valid window samples keeps its full value.
 4. **Threshold and label.** `abs(change_db) >= threshold_db`, then connected
    components with 8-neighbour connectivity, then the minimum area filter
    (using the mean geodesic cell area, and the exact geodesic polygon area as a
@@ -170,7 +182,12 @@ the provenance rules below forbid.
    grid; `mean_backscatter_db` is `10*log10(mean linear power)` over the valid
    ROI pixels of each scene, `change_from_baseline_db` is that value minus the
    baseline scene's, and `valid_fraction` is valid pixels over ROI pixels.
-8. **Ordering.** Regions are ordered by descending `priority_score`, then
+8. **Unevaluable area.** Pixels whose original observation is missing — at a
+   scene's valid-mask edge, inside a nodata hole, or beyond the snapped grid
+   footprint — are excluded from the region set and from `valid_area_ha`, and
+   are reported in `not_evaluable_area_ha`. They are never reconstructed, and
+   they can never contribute a detected change.
+9. **Ordering.** Regions are ordered by descending `priority_score`, then
    descending `area_ha`, then centroid latitude/longitude, and ids are assigned
    `R001`, `R002`, ... in that order. The order and ids are deterministic for a
    given input, so repeated runs and repeated bundles agree.
@@ -345,7 +362,10 @@ Every run records its own `limitations` array, which always includes at least:
    and processing effects, so magnitudes are not loss severity;
 7. the before/after preview stretch range is not an absolute radiometric scale;
 8. the minimum area filter uses mean geodesic cell area, so the retained set can
-   differ marginally from an exact per-cell area filter.
+   differ marginally from an exact per-cell area filter;
+9. pixels with a missing original observation are unevaluable rather than
+   interpolated: nodata holes and valid-mask edges appear as gaps in the region
+   polygons, so a region can be interrupted by unmeasured ground.
 
 ## Tests
 
@@ -356,7 +376,16 @@ python -m pytest tests/processing/test_change.py
 All fixtures are synthetic and generated in `tmp_path` at test time. Coverage:
 the known 2x power = 3.0103 dB patch and the exact 2.2185 dB kernel-diluted
 ring; stable background producing no regions; nodata blocks, filter-edge
-support, and preserved polygon holes with hole-subtracted area; minimum area
+support, and preserved polygon holes with hole-subtracted area; an isolated
+single-cell nodata hole and a 3x3 nodata block inside a changed patch, each
+proving the missing original centre stays nodata in `change.tif` and leaves
+`total_changed_area_ha`, `valid_area_ha` and `not_evaluable_area_ha` short by
+exactly its own cells while the surrounding cells keep the full 3.0103 dB; a
+nodata stripe along a scene's valid-mask edge, proving the post-warp remask
+prevents bilinear interpolation from manufacturing observations at the edge and
+that the outside-of-footprint ring of the snapped grid is never evaluable; the
+unit regression for the kernel rule itself (a valid centre with nodata neighbours
+is still defined, a missing centre never is); minimum area
 filtering at several thresholds; rejection of unverified provenance, dB and
 amplitude rasters, complex rasters, missing CRS, degenerate transforms,
 incompatible pairs, wrong scene counts, duplicate dates, unsorted scenes, failed

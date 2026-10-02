@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Canopy Watch clearings dashboard</title>
+
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@500;600&display=swap" rel="stylesheet" />
+
+		<script src="https://cdn.tailwindcss.com"></script>
+		<script>
+			tailwind.config = {
+				theme: {
+					extend: {
+						colors: {
+							paper: '#E9ECE6', // page ground
+							panel: '#F6F7F3', // raised surfaces, map chips
+							ink: '#1C2620', // text, primary actions
+							muted: '#56625B', // secondary text
+							body: '#3B4740', // long-form text
+							rule: '#C9CFC7', // dividers
+							edge: '#B9C1B8', // control borders
+							selected: '#E2E8DF', // selected row
+							loss: '#B0306A', // cleared forest (text-safe)
+							lossBright: '#E14C8C', // cleared forest on the radar image
+							boundary: '#163F52', // reserve boundary
+							radar: '#3A3D3B', // map fallback
+						},
+						fontFamily: {
+							sans: ['Barlow', '"Helvetica Neue"', 'Helvetica', 'sans-serif'],
+							cond: ['"Barlow Condensed"', '"Arial Narrow"', 'sans-serif'],
+						},
+					},
+				},
+			};
+		</script>
+
+		<style>
+			body {
+				font-variant-numeric: tabular-nums;
+			}
+			input[type='range'],
+			input[type='checkbox'] {
+				accent-color: #1c2620;
+			}
+			:focus-visible {
+				outline: 2px solid #163f52;
+				outline-offset: 2px;
+			}
+			@media (prefers-reduced-motion: reduce) {
+				* {
+					transition: none !important;
+				}
+			}
+		</style>
+	</head>
+
+	<body class="min-h-screen bg-paper font-sans text-ink">
+		<div class="flex min-h-screen flex-col">
+			<!-- Masthead -->
+			<header class="flex flex-wrap items-end gap-x-8 gap-y-3 border-b border-rule px-5 pb-4 pt-5 sm:px-8">
+				<div class="flex min-w-[min(100%,360px)] flex-1 flex-col gap-0.5">
+					<span class="text-[15px] font-semibold">Canopy Watch</span>
+					<h1 class="font-cond text-[32px] font-semibold leading-[1.05] tracking-[-0.01em] sm:text-[40px]">[Reserve name], [Country]</h1>
+				</div>
+				<div class="flex flex-wrap items-end gap-3">
+					<label class="flex flex-col gap-1 text-[13px] text-muted">
+						Compare
+						<select class="min-h-[44px] rounded border border-edge bg-panel px-3 text-[15px] text-ink">
+							<option>[Date 1] to [Date 2]</option>
+						</select>
+					</label>
+					<button type="button" class="min-h-[44px] rounded border border-edge bg-panel px-4 text-[15px] hover:bg-selected">Download clearings</button>
+				</div>
+			</header>
+
+			<div class="flex flex-1 flex-wrap">
+				<!-- Map plate -->
+				<main class="flex min-w-0 flex-[999_1_640px] flex-col gap-3.5 px-5 pb-8 pt-6 sm:px-8">
+					<div class="grid grid-cols-[44px_minmax(0,1fr)] grid-rows-[22px_auto]">
+						<div></div>
+						<div class="flex justify-between px-0.5 font-cond text-[13px] text-muted"><span>[lon 1]</span><span>[lon 2]</span><span>[lon 3]</span><span>[lon 4]</span><span>[lon 5]</span></div>
+						<div class="flex flex-col justify-between py-1.5 font-cond text-[13px] text-muted"><span>[lat 1]</span><span>[lat 2]</span><span>[lat 3]</span></div>
+
+						<div class="relative h-[420px] overflow-hidden rounded-md bg-radar sm:h-[580px]">
+							<!-- Before -->
+							<svg viewBox="0 0 1000 600" preserveAspectRatio="xMidYMid slice" class="absolute inset-0 h-full w-full" aria-hidden="true">
+								<defs>
+									<filter id="sarBefore" x="0" y="0" width="100%" height="100%">
+										<feTurbulence type="fractalNoise" baseFrequency="0.95" numOctaves="2" seed="4" />
+										<feColorMatrix type="matrix" values="0.75 0 0 0 0.08  0.75 0 0 0 0.08  0.75 0 0 0 0.08  0 0 0 0 1" />
+									</filter>
+								</defs>
+								<rect width="1000" height="600" filter="url(#sarBefore)" />
+								<path d="M-20 420 C 120 380, 200 470, 340 430 S 560 330, 700 380 S 900 470, 1020 430" fill="none" stroke="#0A0B0A" stroke-width="22" />
+								<path d="M80 -10 C 140 120, 300 160, 360 300 S 420 520, 470 620" fill="none" stroke="#9A9E9B" stroke-width="3" />
+							</svg>
+
+							<!-- After, revealed right of the swipe -->
+							<div id="afterLayer" class="absolute inset-0" style="clip-path: inset(0 0 0 50%)">
+								<svg viewBox="0 0 1000 600" preserveAspectRatio="xMidYMid slice" class="absolute inset-0 h-full w-full" aria-hidden="true">
+									<defs>
+										<filter id="sarAfter" x="0" y="0" width="100%" height="100%">
+											<feTurbulence type="fractalNoise" baseFrequency="0.95" numOctaves="2" seed="4" />
+											<feColorMatrix type="matrix" values="0.75 0 0 0 0.08  0.75 0 0 0 0.08  0.75 0 0 0 0.08  0 0 0 0 1" />
+										</filter>
+										<filter id="sarCleared" x="0" y="0" width="100%" height="100%">
+											<feTurbulence type="fractalNoise" baseFrequency="1.3" numOctaves="1" seed="9" />
+											<feColorMatrix type="matrix" values="0.16 0 0 0 0.02  0.16 0 0 0 0.02  0.16 0 0 0 0.02  0 0 0 0 1" />
+										</filter>
+										<clipPath id="clearedShapes">
+											<path d="M560 150 L655 135 L690 205 L640 260 L570 240 Z" />
+											<path d="M720 60 L800 70 L815 130 L745 140 Z" />
+											<path d="M380 470 L450 455 L470 520 L400 540 Z" />
+										</clipPath>
+									</defs>
+									<rect width="1000" height="600" filter="url(#sarAfter)" />
+									<rect width="1000" height="600" filter="url(#sarCleared)" clip-path="url(#clearedShapes)" />
+									<path d="M-20 420 C 120 380, 200 470, 340 430 S 560 330, 700 380 S 900 470, 1020 430" fill="none" stroke="#0A0B0A" stroke-width="22" />
+									<path d="M80 -10 C 140 120, 300 160, 360 300 S 420 520, 470 620" fill="none" stroke="#9A9E9B" stroke-width="3" />
+									<path d="M360 300 C 450 260, 520 220, 600 200" fill="none" stroke="#9A9E9B" stroke-width="3" />
+									<g id="clearingsLayer" stroke="#E14C8C" stroke-linejoin="round">
+										<path data-map-clearing="c1" d="M560 150 L655 135 L690 205 L640 260 L570 240 Z" />
+										<path data-map-clearing="c2" d="M720 60 L800 70 L815 130 L745 140 Z" />
+										<path data-map-clearing="c3" d="M380 470 L450 455 L470 520 L400 540 Z" />
+									</g>
+								</svg>
+							</div>
+
+							<!-- Grid and reserve boundary -->
+							<svg viewBox="0 0 1000 600" preserveAspectRatio="xMidYMid slice" class="pointer-events-none absolute inset-0 h-full w-full" aria-hidden="true">
+								<path d="M250 0V600M500 0V600M750 0V600M0 200H1000M0 400H1000" stroke="rgba(255,255,255,0.16)" stroke-width="1" />
+								<g id="reserveLayer" fill="none" stroke-linejoin="round">
+									<path d="M470 90 L760 40 L880 180 L820 330 L560 360 L440 240 Z" stroke="#F6F7F3" stroke-width="6" />
+									<path d="M470 90 L760 40 L880 180 L820 330 L560 360 L440 240 Z" stroke="#163F52" stroke-width="3" stroke-dasharray="12 6" />
+								</g>
+							</svg>
+
+							<!-- Swipe line -->
+							<div id="swipeLine" class="pointer-events-none absolute inset-y-0 -ml-px w-0.5 bg-panel" style="left: 50%">
+								<div class="absolute left-1/2 top-1/2 flex h-10 w-10 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-panel shadow-[0_1px_4px_rgba(0,0,0,0.35)]">
+									<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1C2620" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l-6 6 6 6M15 6l6 6-6 6" /></svg>
+								</div>
+							</div>
+
+							<!-- Date tags -->
+							<span class="absolute left-3.5 top-3.5 rounded-[3px] bg-panel px-2.5 py-1 font-cond text-base font-semibold">[Date 1]</span>
+							<span class="absolute right-[70px] top-3.5 rounded-[3px] bg-panel px-2.5 py-1 font-cond text-base font-semibold">[Date 2]</span>
+
+							<!-- Zoom -->
+							<div class="absolute right-3 top-3 flex flex-col overflow-hidden rounded bg-panel">
+								<button type="button" aria-label="Zoom in" class="flex h-11 w-11 items-center justify-center hover:bg-selected">
+									<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+								</button>
+								<button type="button" aria-label="Zoom out" class="flex h-11 w-11 items-center justify-center border-t border-rule hover:bg-selected">
+									<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14" /></svg>
+								</button>
+							</div>
+
+							<!-- Map controls -->
+							<div class="absolute bottom-3.5 left-3.5 flex max-w-[calc(100%-150px)] flex-wrap items-center gap-x-[18px] gap-y-1.5 rounded bg-panel px-3.5 py-2 text-sm">
+								<label class="flex min-h-[36px] cursor-pointer items-center gap-2">
+									<input id="toggleClearings" type="checkbox" class="h-[18px] w-[18px]" checked />
+									<span class="h-3.5 w-3.5 rounded-sm border-2 border-loss bg-lossBright/45"></span>Clearings
+								</label>
+								<label class="flex min-h-[36px] cursor-pointer items-center gap-2">
+									<input id="toggleReserve" type="checkbox" class="h-[18px] w-[18px]" checked />
+									<span class="w-[18px] border-t-[3px] border-dashed border-boundary"></span>Reserve boundary
+								</label>
+								<label class="flex min-h-[36px] items-center gap-2.5">
+									Sensitivity
+									<input id="sensitivity" type="range" min="1" max="6" step="0.5" value="3" class="w-[110px]" />
+									<span id="sensitivityValue" class="min-w-[44px]">3 dB</span>
+								</label>
+							</div>
+
+							<!-- Scale -->
+							<div class="absolute bottom-3.5 right-3.5 flex flex-col gap-[3px] rounded bg-panel px-2.5 py-1.5 text-[13px]">
+								<div class="h-1.5 w-[90px] border-2 border-t-0 border-ink"></div>
+								[1 km]
+							</div>
+						</div>
+					</div>
+
+					<!-- Swipe as a date range -->
+					<label class="ml-11 flex items-center gap-3.5 text-[15px]">
+						<span class="font-semibold">[Date 1]</span>
+						<input id="swipe" type="range" min="0" max="100" value="50" aria-label="Slide to compare the two dates" class="min-h-[32px] flex-1" />
+						<span class="font-semibold">[Date 2]</span>
+					</label>
+
+					<!-- Time series -->
+					<section class="ml-11 flex flex-col gap-1.5 border-t border-rule pt-3">
+						<h2 class="text-base font-semibold">Radar return over time, <span id="seriesName">north block</span></h2>
+						<p class="max-w-[62ch] text-sm text-muted">Standing forest scatters the radar back strongly. A sharp, lasting drop means the canopy is gone.</p>
+						<svg viewBox="0 0 900 130" class="h-[130px] w-full" role="img" aria-label="Illustrative series: the radar return holds steady, then drops between the fourth and fifth acquisitions and stays low">
+							<line x1="0" y1="105" x2="900" y2="105" stroke="#C9CFC7" />
+							<line x1="0" y1="34" x2="900" y2="34" stroke="#C9CFC7" stroke-dasharray="2 6" />
+							<polyline points="40,32 170,36 300,30 430,34" fill="none" stroke="#1C2620" stroke-width="2.5" stroke-linejoin="round" />
+							<polyline points="430,34 560,86" fill="none" stroke="#B0306A" stroke-width="3" />
+							<polyline points="560,86 690,90 820,85" fill="none" stroke="#1C2620" stroke-width="2.5" stroke-linejoin="round" />
+							<g fill="#1C2620">
+								<circle cx="40" cy="32" r="4" />
+								<circle cx="170" cy="36" r="4" />
+								<circle cx="300" cy="30" r="4" />
+								<circle cx="430" cy="34" r="4" />
+								<circle cx="690" cy="90" r="4" />
+								<circle cx="820" cy="85" r="4" />
+							</g>
+							<circle cx="560" cy="86" r="6" fill="#B0306A" />
+							<text x="40" y="24" fill="#56625B" font-size="13" font-family="Barlow, sans-serif">Forest</text>
+							<text x="572" y="70" fill="#B0306A" font-size="14" font-weight="600" font-family="Barlow, sans-serif">Cleared</text>
+							<g fill="#56625B" font-size="13" font-family="Barlow Condensed, sans-serif" text-anchor="middle">
+								<text x="40" y="124">[D1]</text>
+								<text x="170" y="124">[D2]</text>
+								<text x="300" y="124">[D3]</text>
+								<text x="430" y="124">[D4]</text>
+								<text x="560" y="124">[D5]</text>
+								<text x="690" y="124">[D6]</text>
+								<text x="820" y="124">[D7]</text>
+							</g>
+						</svg>
+					</section>
+				</main>
+
+				<!-- Case column -->
+				<aside class="flex flex-[1_1_340px] flex-col gap-7 border-t border-rule bg-panel px-7 pb-8 pt-7 lg:max-w-[420px] lg:border-l lg:border-t-0">
+					<p class="max-w-[30ch] text-[22px] font-medium leading-[1.35]"><strong class="font-semibold">[000] ha</strong> of forest was cleared between [Date 1] and [Date 2]. <strong class="font-semibold">[00] ha</strong> of it is inside the reserve.</p>
+
+					<section class="flex flex-col gap-1">
+						<h2 class="mb-2 text-base font-semibold">3 new clearings, largest first</h2>
+						<div id="clearingList" class="flex flex-col gap-1"></div>
+					</section>
+
+					<section class="mt-auto flex flex-col gap-3 border-t border-rule pt-5">
+						<h2 id="detailTitle" class="text-xl font-semibold"></h2>
+						<p id="detailText" class="text-[15px] leading-normal text-body"></p>
+						<div class="flex flex-wrap gap-2.5">
+							<button type="button" class="min-h-[44px] rounded bg-ink px-[18px] text-[15px] font-semibold text-panel hover:bg-ink/90">Send to reserve team</button>
+							<button type="button" class="min-h-[44px] rounded border border-edge px-[18px] text-[15px] hover:bg-selected">Mark as reviewed</button>
+						</div>
+					</section>
+				</aside>
+			</div>
+		</div>
+
+		<script>
+			const clearings = [
+				{
+					id: 'c1',
+					name: 'North block',
+					title: 'North block clearing',
+					where: 'Inside the reserve',
+					area: '[00] ha',
+					viewBox: '545 120 160 155',
+					path: 'M560 150 L655 135 L690 205 L640 260 L570 240 Z',
+					detail: 'Inside the reserve boundary, about [0] km from the nearest road. First seen on [Date 2].',
+				},
+				{
+					id: 'c2',
+					name: 'Northeast edge',
+					title: 'Northeast edge clearing',
+					where: 'Just outside the boundary',
+					area: '[00] ha',
+					viewBox: '705 45 125 110',
+					path: 'M720 60 L800 70 L815 130 L745 140 Z',
+					detail: 'In the buffer zone, [00] m outside the boundary. First seen on [Date 2].',
+				},
+				{
+					id: 'c3',
+					name: 'Access road',
+					title: 'Access road clearing',
+					where: 'Outside the reserve',
+					area: '[00] ha',
+					viewBox: '365 440 120 115',
+					path: 'M380 470 L450 455 L470 520 L400 540 Z',
+					detail: 'Next to the access road, outside the reserve. First seen on [Date 2].',
+				},
+			];
+
+			let selectedId = 'c1';
+
+			const listEl = document.getElementById('clearingList');
+
+			const renderList = () => {
+				listEl.innerHTML = '';
+				clearings.forEach((clearing) => {
+					const isSelected = clearing.id === selectedId;
+					const button = document.createElement('button');
+					button.type = 'button';
+					button.setAttribute('aria-pressed', String(isSelected));
+					button.className = `flex w-full items-center gap-3.5 rounded px-3 py-2.5 text-left ${isSelected ? 'bg-selected' : 'hover:bg-selected/60'}`;
+					button.innerHTML = `
+          <svg width="48" height="48" viewBox="${clearing.viewBox}" aria-hidden="true" class="flex-none">
+            <path d="${clearing.path}" fill="${isSelected ? 'rgba(225,76,140,0.55)' : 'rgba(225,76,140,0.15)'}" stroke="#B0306A" stroke-width="4" stroke-linejoin="round" />
+          </svg>
+          <span class="flex min-w-0 flex-1 flex-col gap-0.5">
+            <span class="text-base font-semibold">${clearing.name}</span>
+            <span class="text-sm text-muted">${clearing.where}</span>
+          </span>
+          <span class="whitespace-nowrap text-base font-medium">${clearing.area}</span>`;
+					button.addEventListener('click', () => handleSelect(clearing.id));
+					listEl.appendChild(button);
+				});
+			};
+
+			const renderSelection = () => {
+				const current = clearings.find((clearing) => clearing.id === selectedId) ?? clearings[0];
+				document.getElementById('detailTitle').textContent = current.title;
+				document.getElementById('detailText').textContent = current.detail;
+				document.getElementById('seriesName').textContent = current.name.toLowerCase();
+
+				document.querySelectorAll('[data-map-clearing]').forEach((shape) => {
+					const isSelected = shape.dataset.mapClearing === selectedId;
+					shape.setAttribute('fill', isSelected ? 'rgba(225,76,140,0.55)' : 'rgba(225,76,140,0.28)');
+					shape.setAttribute('stroke-width', isSelected ? '4' : '2');
+				});
+			};
+
+			const handleSelect = (id) => {
+				selectedId = id;
+				renderList();
+				renderSelection();
+			};
+
+			// Before/after swipe
+			const swipeInput = document.getElementById('swipe');
+			const afterLayer = document.getElementById('afterLayer');
+			const swipeLine = document.getElementById('swipeLine');
+			const handleSwipe = () => {
+				const position = swipeInput.value;
+				afterLayer.style.clipPath = `inset(0 0 0 ${position}%)`;
+				swipeLine.style.left = `${position}%`;
+			};
+			swipeInput.addEventListener('input', handleSwipe);
+
+			// Layer toggles
+			const bindToggle = (inputId, layerId) => {
+				const input = document.getElementById(inputId);
+				const layer = document.getElementById(layerId);
+				input.addEventListener('change', () => {
+					layer.style.opacity = input.checked ? '1' : '0';
+				});
+			};
+			bindToggle('toggleClearings', 'clearingsLayer');
+			bindToggle('toggleReserve', 'reserveLayer');
+
+			// Sensitivity readout
+			const sensitivityInput = document.getElementById('sensitivity');
+			const sensitivityValue = document.getElementById('sensitivityValue');
+			sensitivityInput.addEventListener('input', () => {
+				sensitivityValue.textContent = `${sensitivityInput.value} dB`;
+			});
+
+			renderList();
+			renderSelection();
+			handleSwipe();
+		</script>
+	</body>
+</html>

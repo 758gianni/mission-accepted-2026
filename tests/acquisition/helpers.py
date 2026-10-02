@@ -72,8 +72,10 @@ def record_upstream_argv(monkeypatch, upstream_group_name: str = "cli") -> list[
 
     def recording_main(self, args=None, **kwargs):
         if getattr(self, "name", None) == upstream_group_name:
+            # record and return without executing: the upstream command body never
+            # runs, and the wrapper keeps going (multi-UUID loops stay observable)
             recorded.append(list(args or []))
-            raise SystemExit(0)
+            return None
         return original(self, args=args, **kwargs)
 
     monkeypatch.setattr(click.Group, "main", recording_main)

@@ -6,5 +6,10 @@
 # The wrapper imports that pinned CLI in-process, so its own dependencies
 # (eodms-py, py-eodms-rapi, fiona, shapely, geomet, ...) live in the bootstrap
 # virtualenv, not here.
+# Installed into .tools/eodms-cli/.venv by acquisition/bootstrap_eodms_cli.sh,
+# which is also the interpreter used to run the tests and the wrapper.
 click==8.1.8
+
+# Test dependency. The boundary tests in tests/acquisition/ are the security
+# evidence for this wrapper; they must never be replaced by mocked variants.
 pytest==8.3.4

@@ -96,25 +96,61 @@ def _reject_credential_options(args: Sequence[str]) -> None:
             raise CredentialError(_FORBIDDEN_HINT.format(option=option))
 
 
-def _apply_credential_defaults(command: Any, username: str | None, password: str | None) -> None:
-    """Inject credentials as in-memory Click defaults (never as argv)."""
+def require_pinned_revision() -> str:
+    """Fail closed unless the installed CLI source is exactly the pinned revision.
+
+    Runs on every ``search``/``download`` **before** any credential prompt, so a
+    drifted or tampered source tree can never receive a password.
+    """
+    revision = _upstream_revision()
+    if revision != EODMS_CLI_REV:
+        raise CredentialError(
+            f"Installed EODMS CLI revision {revision!r} != pinned {EODMS_CLI_REV}. "
+            "Refusing to prompt for credentials or contact EODMS with an unverified "
+            "CLI. Re-run: bash acquisition/bootstrap_eodms_cli.sh"
+        )
+    return revision
+
+
+def _apply_credential_defaults(command: Any, username: str | None, password: str | None):
+    """Inject credentials as in-memory Click defaults (never as argv).
+
+    Returns a restore callable: the defaults are removed again in ``finally`` so a
+    later anonymous invocation in the same process cannot inherit them.
+    """
     if not username and not password:
-        return
+        return lambda: None
+
+    saved: list[tuple[Any, Any]] = []
     for param in command.params:
         if param.name == "username" and username:
+            saved.append((param, param.default))
             param.default = username
         elif param.name == "password" and password:
+            saved.append((param, param.default))
             param.default = password
+
+    def restore() -> None:
+        for param, previous in reversed(saved):
+            param.default = previous
+
+    return restore
 
 
 def _run_upstream(
-    argv: Sequence[str],
+    argv: Sequence[str] | Sequence[Sequence[str]],
     *,
     anonymous: bool = False,
     needs_credentials: bool = True,
     username_prompt=None,
     password_prompt=None,
 ) -> None:
+    argvs: list[list[str]] = (
+        [list(argv)] if argv and isinstance(argv[0], str) else [list(a) for a in argv]  # type: ignore[index]
+    )
+    # Pin check first: a drifted source tree must never be prompted for, let alone
+    # sent credentials.
+    require_pinned_revision()
     upstream = load_upstream()
     username, password = obtain_credentials(
         anonymous=anonymous,
@@ -123,18 +159,22 @@ def _run_upstream(
         password_prompt=password_prompt,
     )
     with isolated_eodms_environment(upstream):
-        command = upstream.cli.commands.get(argv[0])
-        if command is None:
-            raise click.ClickException(
-                f"Pinned EODMS CLI has no {argv[0]!r} command (found: "
-                f"{', '.join(sorted(upstream.cli.commands))})."
-            )
-        _apply_credential_defaults(command, username, password)
-        upstream.cli.main(
-            args=list(argv),
-            prog_name="eodms-cli (pinned, invoked by acquisition)",
-            standalone_mode=True,
-        )
+        for single_argv in argvs:
+            command = upstream.cli.commands.get(single_argv[0])
+            if command is None:
+                raise click.ClickException(
+                    f"Pinned EODMS CLI has no {single_argv[0]!r} command (found: "
+                    f"{', '.join(sorted(upstream.cli.commands))})."
+                )
+            restore_defaults = _apply_credential_defaults(command, username, password)
+            try:
+                upstream.cli.main(
+                    args=single_argv,
+                    prog_name="eodms-cli (pinned, invoked by acquisition)",
+                    standalone_mode=True,
+                )
+            finally:
+                restore_defaults()
 
 
 # --------------------------------------------------------------------------
@@ -301,9 +341,7 @@ def download_cmd(ctx: click.Context, collection: str, scenes: str | None,
     if not (collection or "").strip():
         raise CredentialError("--collection is required.")
 
-    uuid_list: list[str] = []
-    for chunk in uuids:
-        uuid_list.extend(part.strip() for part in chunk.split(",") if part.strip())
+    uuid_list = scenes_mod.normalise_uuids(uuids)
     if scenes and uuid_list:
         raise CredentialError("Use either --scenes or --uuid, not both.")
 
@@ -322,7 +360,7 @@ def download_cmd(ctx: click.Context, collection: str, scenes: str | None,
     if not str(output_dir).strip():
         raise CredentialError("--output-dir must not be empty.")
 
-    argv = scenes_mod.download_argv(
+    argvs = scenes_mod.download_argvs(
         collection=collection.strip(),
         scenes_path=scenes_path,
         uuids=uuid_list,
@@ -331,7 +369,7 @@ def download_cmd(ctx: click.Context, collection: str, scenes: str | None,
         limit=limit,
     )
     _run_upstream(
-        argv,
+        argvs,
         anonymous=False,
         needs_credentials=True,
         username_prompt=lambda: ctx.obj["username_prompt"](),

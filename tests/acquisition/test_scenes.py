@@ -92,8 +92,44 @@ def test_download_argv_for_scenes_file(tmp_path):
     ]
 
 
-def test_download_argv_for_explicit_uuids():
+def test_download_argv_for_a_single_explicit_uuid():
     argv = scenes.download_argv(
+        collection="Radarsat-2_Tropical_Forest_Products",
+        scenes_path=None,
+        uuids=["a"],
+        output_dir=DEFAULT_RAW_DIR,
+        env="prod",
+        limit=100,
+    )
+    assert argv[argv.index("--uuid") + 1] == "a"
+    assert "--input" not in argv
+
+
+def test_upstream_uuid_option_takes_exactly_one_uuid(upstream):
+    """Upstream reality check: --uuid is a single, non-multiple TEXT option."""
+    param = {p.name: p for p in upstream.cli.commands["download"].params}["uuid"]
+    assert param.multiple is False
+    assert param.nargs == 1
+
+
+def test_normalise_uuids_splits_and_dedupes():
+    assert scenes.normalise_uuids(["a,b", "b", " c ", ""]) == ["a", "b", "c"]
+
+
+def test_download_argv_refuses_multiple_uuids_in_one_invocation():
+    with pytest.raises(ValueError):
+        scenes.download_argv(
+            collection="C",
+            scenes_path=None,
+            uuids=["a", "b"],
+            output_dir=DEFAULT_RAW_DIR,
+            env="prod",
+            limit=100,
+        )
+
+
+def test_download_argvs_emits_one_invocation_per_uuid():
+    argvs = scenes.download_argvs(
         collection="Radarsat-2_Tropical_Forest_Products",
         scenes_path=None,
         uuids=["a", "b"],
@@ -101,9 +137,8 @@ def test_download_argv_for_explicit_uuids():
         env="prod",
         limit=100,
     )
-    assert "--uuid" in argv
-    assert argv[argv.index("--uuid") + 1] == "a,b"
-    assert "--input" not in argv
+    assert [argv[argv.index("--uuid") + 1] for argv in argvs] == ["a", "b"]
+    assert all("--input" not in argv for argv in argvs)
 
 
 def test_search_argv_uses_aoi_and_datetime():
@@ -180,17 +215,24 @@ def test_download_accepts_uuid_list(monkeypatch, tmp_path, fake_aaa):
             "--collection",
             "Radarsat-2_Tropical_Forest_Products",
             "--uuid",
-            "uuid-1",
+            "uuid-1,uuid-2",
             "--uuid",
-            "uuid-2",
+            "uuid-3",
             "--output-dir",
             "somewhere/else",
         ],
     )
     assert result.exit_code == 0, result.output
-    argv = recorded[-1]
-    assert argv[argv.index("--uuid") + 1] == "uuid-1,uuid-2"
-    assert argv[argv.index("--dl_dir") + 1] == "somewhere/else"
+    # one upstream invocation per UUID, never a comma-joined value
+    assert len(recorded) == 3
+    assert [argv[argv.index("--uuid") + 1] for argv in recorded] == [
+        "uuid-1",
+        "uuid-2",
+        "uuid-3",
+    ]
+    for argv in recorded:
+        assert "," not in argv[argv.index("--uuid") + 1]
+        assert argv[argv.index("--dl_dir") + 1] == "somewhere/else"
 
 
 def test_pinned_constants_are_exact():

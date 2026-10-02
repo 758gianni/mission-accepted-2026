@@ -156,6 +156,18 @@ def search_argv(
     return argv
 
 
+def normalise_uuids(values: Iterable[str]) -> list[str]:
+    """Split comma-separated ``--uuid`` values, drop blanks, dedupe in order.
+
+    The upstream ``download --uuid`` option takes a *single* UUID and never
+    splits on commas (verified against the pinned revision), so the wrapper
+    expands a list into one upstream invocation per UUID instead of joining.
+    """
+    return _dedupe(
+        part.strip() for chunk in values for part in str(chunk).split(",") if part.strip()
+    )
+
+
 def download_argv(
     *,
     collection: str,
@@ -165,13 +177,52 @@ def download_argv(
     env: str,
     limit: int,
 ) -> list[str]:
+    """One upstream argument vector for a single UUID (or for a scenes file)."""
+    if scenes_path and uuids:
+        raise ValueError("use either scenes_path or uuids, not both")
+    if not scenes_path and len(uuids) != 1:
+        raise ValueError("upstream --uuid takes exactly one UUID per invocation")
     argv = ["download", "--collection", collection]
     if scenes_path:
         argv += ["--input", str(scenes_path)]
     else:
-        argv += ["--uuid", ",".join(uuids)]
+        argv += ["--uuid", uuids[0]]
     argv += ["--dl_dir", str(output_dir)]
     if limit is not None:
         argv += ["--limit", str(limit)]
     argv += ["--env", env]
     return argv
+
+
+def download_argvs(
+    *,
+    collection: str,
+    scenes_path: str | Path | None,
+    uuids: list[str],
+    output_dir: str,
+    env: str,
+    limit: int,
+) -> list[list[str]]:
+    """One argv per upstream invocation (a scenes file needs exactly one)."""
+    if scenes_path:
+        return [
+            download_argv(
+                collection=collection,
+                scenes_path=scenes_path,
+                uuids=[],
+                output_dir=output_dir,
+                env=env,
+                limit=limit,
+            )
+        ]
+    return [
+        download_argv(
+            collection=collection,
+            scenes_path=None,
+            uuids=[uuid],
+            output_dir=output_dir,
+            env=env,
+            limit=limit,
+        )
+        for uuid in uuids
+    ]

@@ -58,6 +58,11 @@ log "installing dependencies (this may take a few minutes on first run)"
 "${PY}" -m pip install --quiet "eodms-py @ git+${EODMS_PY_REPO}@${EODMS_PY_REV}"
 "${PY}" -m pip install --quiet "py-eodms-rapi @ git+${RAPI_REPO}@${RAPI_REV}"
 
+# Dev/test dependencies for the wrapper itself, so the documented test command
+# (`${VENV_DIR}/bin/python -m pytest tests/acquisition -q`) works straight after
+# a bootstrap. Pinned in requirements-acquisition.txt.
+"${PY}" -m pip install --quiet --requirement "${REPO_ROOT}/requirements-acquisition.txt"
+
 # Credential-free smoke check: import the pinned CLI and render its help inside
 # the wrapper sandbox, which redirects every home-derived lookup to a task-scoped
 # temp dir. No EODMS login, no network, no ~/.eodms read, no log file written,

@@ -330,6 +330,24 @@ def test_corrupt_zip_is_reported_as_error(tmp_path):
     assert any(e["stage"] == "zip" for e in report["errors"])
 
 
+def test_zip_with_several_products_keeps_rasters_with_their_own_product(
+    tmp_path,
+):
+    body = "<product xmlns='urn:x'><sceneId>{}</sceneId><productType>GRD</productType></product>"
+    zip_path = tmp_path / "multi.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("product.xml", body.format("ROOT_SCENE"))
+        zf.writestr("ANNO/product.xml", body.format("ANNO_SCENE"))
+        zf.writestr("root_raster.tif", b"not a raster")
+        zf.writestr("ANNO/inner.tif", b"not a raster")
+
+    report = inventory.scan(tmp_path)
+    rasters = {
+        scene["scene_id"]: [r["name"] for r in scene["rasters"]] for scene in report["scenes"]
+    }
+    assert rasters == {"ROOT_SCENE": ["root_raster.tif"], "ANNO_SCENE": ["ANNO/inner.tif"]}
+
+
 # ---------------------------------------------------------------------------
 # raster + GCP metadata
 # ---------------------------------------------------------------------------

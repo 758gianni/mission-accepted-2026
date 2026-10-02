@@ -1118,7 +1118,7 @@ def _inspect_zip_archive(
                     )
                     continue
 
-                prefix = _container_prefix(info.filename, product_infos)
+                prefix = _container_prefix(info.filename)
                 member_rasters = [
                     raster for raster in raster_infos if _same_container(prefix, raster.filename)
                 ]
@@ -1161,21 +1161,14 @@ def _archive_locations(archive_path: str, member: str) -> List[str]:
     ]
 
 
-def _container_prefix(product_xml_name: str, product_infos: Sequence[zipfile.ZipInfo]) -> str:
-    """Directory prefix of the folder containing product.xml (e.g. ``IMAGEDATA/``)."""
-    own = PurePosixPath(product_xml_name.replace("\\", "/")).parent
-    own_prefix = "" if str(own) in (".", "") else f"{own}/"
-    for info in product_infos:
-        if info.filename == product_xml_name:
-            continue
-        candidate = str(PurePosixPath(info.filename.replace("\\", "/")).parent)
-        candidate_prefix = "" if candidate in (".", "") else f"{candidate}/"
-        if candidate_prefix and (
-            candidate_prefix.startswith(own_prefix) or own_prefix.startswith(candidate_prefix)
-        ):
-            if len(candidate_prefix) > len(own_prefix):
-                own_prefix = candidate_prefix
-    return own_prefix
+def _container_prefix(product_xml_name: str) -> str:
+    """Directory prefix of the folder containing product.xml (e.g. ``IMAGEDATA/``).
+
+    ``""`` means the archive root. Rasters are only attached to a product.xml found
+    in their own folder, so an archive holding several products stays unambiguous.
+    """
+    parent = PurePosixPath(product_xml_name.replace("\\", "/")).parent
+    return "" if str(parent) in (".", "") else f"{parent}/"
 
 
 def _same_container(prefix: str, member_name: str) -> bool:

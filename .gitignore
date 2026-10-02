@@ -11,6 +11,20 @@
 /data/*.sqlite
 /data/*.sqlite-*
 /data/*.sqlite.lock
+/data/*.sqlite.log*
+/data/raw/
+/data/processed/
+/data/reports/
+/data/swarmforge-launch.log
+
+# Local tools, Python environments, and generated caches
+/.tools/
+/.firecrawl/
+/.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
 
 # Operating system metadata
 .DS_Store

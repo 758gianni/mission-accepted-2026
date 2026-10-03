@@ -1286,6 +1286,40 @@ def test_mask_raster_is_the_retained_region_mask_with_invalid_nodata(tmp_path):
     assert analysis["metrics"]["total_changed_area_ha"] <= analysis["metrics"]["valid_area_ha"]
 
 
+def test_emitted_preprocessing_describes_the_area_filter_that_actually_ran(tmp_path):
+    # the produced artifact must not claim a mean-cell-area filter that the code no longer uses
+    manifest = write_manifest(
+        tmp_path / "m.json",
+        scene(write_raster(tmp_path / "b.tif", stable_grid()), scene_id="A", acquired_at=BASELINE_ACQUIRED),
+        scene(write_raster(tmp_path / "a.tif", change_grid()), scene_id="B", acquired_at=FOLLOWUP_ACQUIRED),
+    )
+    out_dir = str(tmp_path / "out")
+    run_change_detection(manifest, out_dir, 2.0, 1.0)
+    with open(os.path.join(out_dir, "analysis.json"), "r", encoding="utf-8") as handle:
+        emitted = json.load(handle)
+
+    preprocessing = " ".join(emitted["method"]["preprocessing"]).lower()
+    limitations = " ".join(emitted["limitations"]).lower()
+    # no claim that a mean cell area decided retention
+    assert "minimum area using mean geodesic cell area" not in preprocessing
+    assert not any(
+        "mean geodesic cell area" in step.lower() and "filter" in step.lower()
+        for step in emitted["method"]["preprocessing"]
+    )
+    for forbidden in ("filtered by minimum area using mean", "cell-count", "cell count estimate"):
+        assert forbidden not in preprocessing
+    # the emitted method must describe the filter that actually ran
+    assert "minimum area" in preprocessing
+    assert "geodesic polygon area" in preprocessing
+    assert "holes" in preprocessing
+    assert "never decides retention" in preprocessing
+    # and it must not contradict the limitations, which carry the same rule
+    assert "minimum-area" in limitations
+    assert "geodesic polygon" in limitations
+    assert "not used to decide" in limitations or "never decides retention" in limitations
+    assert emitted["method"]["minimum_area_ha"] == 1.0
+
+
 def test_minimum_area_uses_the_final_geodesic_polygon_area(tmp_path):
     # a threshold that sits between the naive cell-count estimate and the true geodesic
     # polygon area: acceptance must follow the reported area, not the estimate

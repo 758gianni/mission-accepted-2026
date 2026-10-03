@@ -1148,8 +1148,9 @@ def run_change_detection(
                 "Linear-power means converted to backscatter dB (10*log10) only where both scenes have "
                 "valid support; all other pixels are nodata and excluded from evaluation.",
                 "Thresholded absolute dB change, labelled components with 8-neighbour connectivity, "
-                "filtered by minimum area using mean geodesic cell area, and vectorised with holes "
-                "preserved.",
+                "vectorised with holes preserved, and then filtered by minimum area on each region's "
+                "final geodesic polygon area (holes subtracted); the mean reference cell area is "
+                "reported for context only and never decides retention.",
                 "Region area_ha is the geodesic area of the thresholded pixels including subtracted "
                 "holes, computed on the WGS84 ellipsoid.",
                 "Previews are separately resampled onto a WGS84 pixel grid; projected rectangular "

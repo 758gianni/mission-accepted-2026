@@ -1,10 +1,6 @@
 import express from 'express';
 
-const clearingContext = [
-	{ title: 'North block clearing', location: 'Inside the reserve' },
-	{ title: 'Northeast edge clearing', location: 'Just outside the boundary, in the buffer zone' },
-	{ title: 'Access road clearing', location: 'Outside the reserve, next to the access road' },
-];
+import changeModes from '../shared/change-modes.json' with { type: 'json' };
 
 export function createApp(client, model = 'gpt-5.4-mini') {
 	const app = express();
@@ -13,6 +9,8 @@ export function createApp(client, model = 'gpt-5.4-mini') {
 
 	app.post('/api/chat', async (req, res) => {
 		const { messages, context } = req.body ?? {};
+		const mode = changeModes.find((item) => item.id === (context?.detectionType ?? 'deforestation'));
+		const clearingContext = mode?.events ?? [];
 		if (
 			!Array.isArray(messages) ||
 			messages.length === 0 ||
@@ -20,6 +18,7 @@ export function createApp(client, model = 'gpt-5.4-mini') {
 			messages.some((message) => !message || !['user', 'assistant'].includes(message.role) || typeof message.content !== 'string' || !message.content.trim() || message.content.length > 4000) ||
 			messages.at(-1).role !== 'user' ||
 			!context ||
+			!mode ||
 			typeof context.selectedClearing !== 'string' ||
 			!clearingContext.some((clearing) => clearing.title === context.selectedClearing) ||
 			!Number.isFinite(context.sensitivityDb) ||
@@ -38,10 +37,12 @@ export function createApp(client, model = 'gpt-5.4-mini') {
 				{
 					model,
 					store: false,
-					instructions: `You are the forest-monitoring assistant for Mission Accepted 2026.
-Answer concisely in plain text about radar-detected forest clearings and the reserve.
+					instructions: `You are the environmental-change assistant for Mission Accepted 2026.
+Answer concisely in plain text about deforestation, possible burn scars, river/lake extent changes, and the reserve.
+The current view is ${mode.label}. ${mode.description}
+Burn scars are not active-fire detections. No thermal observations or live fire alerts are available. Water gain/loss examples do not establish flooding or drought.
 Dashboard facts: ${JSON.stringify(clearingContext)}.
-The selected clearing is ${context.selectedClearing}; the radar sensitivity threshold is ${context.sensitivityDb} dB.
+The selected change is ${context.selectedClearing}; the radar sensitivity threshold is ${context.sensitivityDb} dB.
 This dashboard is a demonstration. All areas, distances, acquisition dates, and the radar time series are placeholders or illustrative. Do not invent measurements, dates, coordinates, confidence scores, or claim to have inspected live radar or satellite imagery.
 A sustained drop in radar return can indicate canopy loss, but requires validation; explain uncertainties when relevant.
 Use the supplied dashboard facts for location questions. If information is unavailable, say so.

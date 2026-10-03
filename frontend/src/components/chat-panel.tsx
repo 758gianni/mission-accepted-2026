@@ -11,6 +11,7 @@ export interface ChatMessage {
 }
 
 interface ChatPanelProps {
+	detectionType?: string;
 	selectedClearing: string;
 	sensitivityDb: number;
 	suggestions?: string[];
@@ -25,7 +26,7 @@ const MAX_INPUT_HEIGHT = 160;
 
 const createId = () => crypto.randomUUID();
 
-const ChatPanel = ({ selectedClearing, sensitivityDb, suggestions = [], title = 'Ask about this area', placeholder = 'Ask about the clearings...', className = '', onClose, isOpen = true }: ChatPanelProps) => {
+const ChatPanel = ({ detectionType = 'deforestation', selectedClearing, sensitivityDb, suggestions = [], title = 'Ask about this area', placeholder = 'Ask about this change...', className = '', onClose, isOpen = true }: ChatPanelProps) => {
 	const reduceMotion = useReducedMotion();
 	const [messages, setMessages] = useState<ChatMessage[]>([]);
 	const [input, setInput] = useState('');
@@ -41,7 +42,7 @@ const ChatPanel = ({ selectedClearing, sensitivityDb, suggestions = [], title = 
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({
 				messages: history.slice(-40).map(({ role, content }) => ({ role, content })),
-				context: { selectedClearing, sensitivityDb },
+				context: { selectedClearing, sensitivityDb, detectionType },
 			}),
 		});
 
@@ -138,7 +139,7 @@ const ChatPanel = ({ selectedClearing, sensitivityDb, suggestions = [], title = 
 			<div ref={listRef} className='min-h-0 flex-1 overflow-y-auto px-5 py-4' aria-live='polite'>
 				{isEmpty ? (
 					<div className='flex flex-col gap-3'>
-						<p className='max-w-[40ch] text-[15px] leading-normal text-muted'>Ask a question about what the radar shows in this reserve.</p>
+						<p className='max-w-[40ch] text-[15px] leading-normal text-muted'>Ask about the selected change, possible causes, or how to validate it.</p>
 
 						{suggestions.length > 0 && (
 							<div className='flex flex-col gap-2'>

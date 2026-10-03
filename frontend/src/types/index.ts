@@ -7,6 +7,7 @@ type ClearingType = {
 	viewBox: string;
 	path: string;
 	detail: string;
+	direction?: string;
 };
 
 export type { ClearingType };

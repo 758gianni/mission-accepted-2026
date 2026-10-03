@@ -1,0 +1,155 @@
+[
+  {
+    "id": "deforestation",
+    "label": "Deforestation",
+    "overlay": "Canopy loss",
+    "color": "#b0306a",
+    "summary": "Explore potential canopy loss and where it intersects the reserve.",
+    "signal": "Canopy change",
+    "description": "Illustrative canopy change. A change in imagery alone does not establish its cause.",
+    "beforeLabel": "Forest",
+    "afterLabel": "Canopy loss",
+    "points": [
+      32,
+      36,
+      30,
+      34,
+      86,
+      90,
+      85
+    ],
+    "suggestions": [
+      "Which changes are inside the reserve?",
+      "What could cause canopy loss?",
+      "How can we validate deforestation?"
+    ],
+    "events": [
+      {
+        "id": "c1",
+        "name": "North block",
+        "title": "North block clearing",
+        "where": "Inside the reserve",
+        "area": "Not measured",
+        "viewBox": "545 120 160 155",
+        "path": "M560 150 L655 135 L690 205 L640 260 L570 240 Z",
+        "detail": "Illustrative canopy-loss patch inside the reserve. Dates and area require source imagery."
+      },
+      {
+        "id": "c2",
+        "name": "Northeast edge",
+        "title": "Northeast edge clearing",
+        "where": "Just outside the boundary",
+        "area": "Not measured",
+        "viewBox": "705 45 125 110",
+        "path": "M720 60 L800 70 L815 130 L745 140 Z",
+        "detail": "Illustrative canopy-loss patch outside the reserve boundary."
+      },
+      {
+        "id": "c3",
+        "name": "Access road",
+        "title": "Access road clearing",
+        "where": "Outside the reserve",
+        "area": "Not measured",
+        "viewBox": "365 440 120 115",
+        "path": "M380 470 L450 455 L470 520 L400 540 Z",
+        "detail": "Illustrative canopy-loss patch next to the access road."
+      }
+    ]
+  },
+  {
+    "id": "wildfire",
+    "label": "Wildfires",
+    "overlay": "Possible burn scars",
+    "color": "#c46020",
+    "summary": "Explore possible burned areas. These examples do not show active fires.",
+    "signal": "Burn-related change",
+    "description": "Illustrative burn-related change. Confirm burned areas with suitable imagery; active-fire monitoring needs thermal observations.",
+    "beforeLabel": "Before",
+    "afterLabel": "Possible burn",
+    "points": [
+      32,
+      35,
+      30,
+      34,
+      90,
+      84,
+      76
+    ],
+    "suggestions": [
+      "Is this an active fire or a burn scar?",
+      "How can we confirm a burned area?",
+      "Which areas need review?"
+    ],
+    "events": [
+      {
+        "id": "f1",
+        "name": "Western ridge",
+        "title": "Western ridge possible burn",
+        "where": "Outside the reserve",
+        "area": "Not measured",
+        "viewBox": "180 80 240 190",
+        "path": "M195 140 L275 95 L365 120 L400 205 L315 255 L235 220 Z",
+        "detail": "Illustrative possible burn scar. No thermal hotspot or active-fire evidence is available."
+      },
+      {
+        "id": "f2",
+        "name": "Reserve interior",
+        "title": "Reserve interior possible burn",
+        "where": "Inside the reserve",
+        "area": "Not measured",
+        "viewBox": "545 150 190 190",
+        "path": "M565 190 L635 165 L710 230 L665 315 L590 290 Z",
+        "detail": "Illustrative possible burn scar inside the boundary. The cause and timing are unconfirmed."
+      }
+    ]
+  },
+  {
+    "id": "water",
+    "label": "Rivers & lakes",
+    "overlay": "Water extent changes",
+    "color": "#247ca5",
+    "summary": "Compare river width and lake shorelines, including water gain and loss.",
+    "signal": "Water extent change",
+    "description": "Illustrative water extent trend. Seasonal variation and acquisition conditions need review before attributing a cause.",
+    "beforeLabel": "Earlier extent",
+    "afterLabel": "Changed extent",
+    "points": [
+      70,
+      64,
+      72,
+      66,
+      40,
+      32,
+      38
+    ],
+    "suggestions": [
+      "Where has the water extent changed?",
+      "Could this be seasonal variation?",
+      "How can we compare lake shorelines?"
+    ],
+    "events": [
+      {
+        "id": "w1",
+        "name": "River bend",
+        "title": "River bend water gain",
+        "where": "Outside the reserve",
+        "area": "Not measured",
+        "viewBox": "460 330 245 100",
+        "path": "M480 368 Q570 335 660 365 L680 405 Q580 370 480 408 Z",
+        "detail": "Illustrative river widening: water gain along the earlier channel.",
+        "direction": "gain"
+      },
+      {
+        "id": "w2",
+        "name": "Eastern lake",
+        "title": "Eastern lake water loss",
+        "where": "Outside the reserve",
+        "area": "Not measured",
+        "viewBox": "800 440 160 140",
+        "path": "M810 480 Q855 435 920 475 Q965 520 910 560 Q855 590 810 530 Z M832 489 Q861 462 899 487 Q928 517 896 542 Q855 558 832 521 Z",
+        "detail": "Illustrative lake contraction: water loss between the earlier and later shoreline.",
+        "direction": "loss"
+      }
+    ]
+  }
+]

@@ -1,16 +1,16 @@
 import { motion, MotionConfig, useReducedMotion } from 'framer-motion';
 import { MessageCircle, X } from 'lucide-react';
 import { useRef, useState } from 'react';
+import type { ChangeMode } from '../change-modes';
 import { ChatPanel } from './chat-panel';
 
 interface FloatingChatProps {
+	mode: ChangeMode;
 	selectedClearing: string;
 	sensitivityDb: number;
 }
 
-const suggestions = ['Which clearings are inside the reserve?', 'When did this clearing start?', 'How reliable is this detection?'];
-
-const FloatingChat = ({ selectedClearing, sensitivityDb }: FloatingChatProps) => {
+const FloatingChat = ({ mode, selectedClearing, sensitivityDb }: FloatingChatProps) => {
 	const [isOpen, setIsOpen] = useState(false);
 	const launcherRef = useRef<HTMLButtonElement>(null);
 	const panelRef = useRef<HTMLDivElement>(null);
@@ -44,7 +44,7 @@ const FloatingChat = ({ selectedClearing, sensitivityDb }: FloatingChatProps) =>
 						}
 					}}
 					className='flex h-[min(560px,calc(100dvh-112px))] w-[min(400px,calc(100vw-32px))] overflow-hidden rounded-2xl border border-edge bg-panel shadow-[0_16px_60px_-12px_rgba(28,38,32,0.3)]'>
-					<ChatPanel selectedClearing={selectedClearing} sensitivityDb={sensitivityDb} suggestions={suggestions} onClose={close} isOpen={isOpen} />
+					<ChatPanel key={mode.id} detectionType={mode.id} selectedClearing={selectedClearing} sensitivityDb={sensitivityDb} suggestions={mode.suggestions} onClose={close} isOpen={isOpen} />
 				</motion.div>
 
 				<motion.button

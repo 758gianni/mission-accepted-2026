@@ -39,9 +39,29 @@ input[type='checkbox'] {
 	}
 }
 
+a,
+button,
+input,
+select,
+textarea {
+	@apply select-none
+    transition-all duration-300 ease-in-out
+    outline-none ring-0
+    focus:outline-none focus:ring-0
+    active:outline-none active:ring-0;
+}
+
+a,
+button {
+	@apply cursor-pointer;
+}
+
+button {
+	@apply select-none;
+}
+
 .button {
-	@apply select-none cursor-pointer
-    min-h-11 px-4
+	@apply min-h-11 px-4
     inline-flex items-center justify-center gap-2
     rounded border border-edge
     bg-panel hover:bg-selected
@@ -50,4 +70,15 @@ input[type='checkbox'] {
     outline-none ring-0
     focus:outline-none focus:ring-0
     active:outline-none active:ring-0;
+}
+
+/* Keep keyboard focus visible inside the floating chat. */
+#area-chat :focus-visible,
+button[aria-controls='area-chat']:focus-visible {
+	outline: 2px solid var(--color-boundary);
+	outline-offset: 3px;
+}
+
+#area-chat textarea {
+	user-select: text;
 }

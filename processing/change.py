@@ -41,6 +41,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import sys
 from datetime import datetime, timezone
@@ -368,7 +369,14 @@ def inspect_raster(scene: Dict[str, Any]) -> Dict[str, Any]:
         )
         _require(
             src.transform is not None
-            and math.isfinite(src.transform.a)
+            and src.transform.b == 0
+            and src.transform.d == 0,
+            f"{label}: prepared raster has a rotated or sheared geotransform "
+            f"(b={src.transform.b}, d={src.transform.d}); this analysis requires axis-aligned "
+            "north-up grids and refuses to guess a rotation it cannot verify",
+        )
+        _require(
+            math.isfinite(src.transform.a)
             and math.isfinite(src.transform.e)
             and abs(src.transform.a) > MIN_PIXEL_SIZE
             and abs(src.transform.e) > MIN_PIXEL_SIZE,
@@ -419,6 +427,7 @@ def inspect_raster(scene: Dict[str, Any]) -> Dict[str, Any]:
         )
         return {
             "scene": scene,
+            "content_digest": raster_content_digest(data, src.dtypes[0], src.nodata, src.transform, src.crs),
             "crs": src.crs,
             "transform": src.transform,
             "width": src.width,
@@ -431,6 +440,35 @@ def inspect_raster(scene: Dict[str, Any]) -> Dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # reference grid
 # --------------------------------------------------------------------------- #
+def raster_content_digest(values: np.ndarray, dtype: str, nodata, transform, crs) -> str:
+    """sha256 over the decoded raster content plus the georeferencing that gives it meaning.
+
+    Two files with different bytes but identical pixels and georeferencing share a digest; any
+    change to the samples, the dtype, the shape, the nodata value, the transform or the CRS
+    changes it. The path and file name are deliberately excluded so the digest travels with the
+    data rather than with a directory layout.
+    """
+    hasher = hashlib.sha256()
+    hasher.update(b"processing/change raster content digest v1\n")
+    metadata = {
+        "dtype": str(dtype),
+        "shape": f"{values.shape[0]}x{values.shape[1]}",
+        "nodata": "none" if nodata is None else repr(float(nodata)),
+        "transform": ",".join(repr(float(value)) for value in tuple(transform)[:6]),
+        "crs": crs.to_wkt() if crs is not None else "none",
+    }
+    for key in sorted(metadata):
+        hasher.update(f"{key}={metadata[key]}\n".encode("utf-8"))
+    hasher.update(np.ascontiguousarray(values, dtype="<f8").tobytes())
+    return hasher.hexdigest()
+
+
+DIGEST_ALGORITHM = (
+    "sha256 over dtype, shape, nodata, transform and CRS plus the little-endian float64 samples of "
+    "each prepared raster as decoded by this CLI (raster content digest v1)"
+)
+
+
 def _wgs84_bounds(info: Dict[str, Any]) -> Tuple[float, float, float, float]:
     return transform_bounds(
         info["crs"], REFERENCE_CRS_EPSG, *rasterio.transform.array_bounds(info["height"], info["width"], info["transform"])
@@ -771,16 +809,57 @@ def _clamp_changed_area(total_changed_area_ha: float, valid_area_ha: float) -> f
     return min(total_changed_area_ha, valid_area_ha)
 
 
-def _analysis_id(scenes: Sequence[Dict[str, Any]], threshold_db: float, min_area_ha: float) -> str:
-    payload = json.dumps(
-        {
-            "scenes": [[scene["id"], scene["acquired_at_iso"]] for scene in scenes],
+#: Bumped whenever a change alters derived results, so identities cannot collide across versions.
+METHOD_VERSION = "prepared-pair-change/1"
+
+#: Processing parameters that materially affect the derived results.
+MATERIAL_PARAMETERS = (
+    "quantity",
+    "threshold_db",
+    "minimum_area_ha",
+    "speckle_min_valid_neighbours",
+    "label_connectivity",
+    "reference_crs",
+    "reference_resolution",
+)
+
+
+def analysis_identity(
+    scenes: Sequence[Dict[str, Any]],
+    threshold_db: float,
+    min_area_ha: float,
+    grid: Dict[str, Any],
+) -> str:
+    """Deterministic id over input raster content, scene identity, and material parameters.
+
+    Identical inputs and parameters always produce the same id; changing the raster bytes while
+    keeping the scene metadata produces a different id, because the per-scene content digest is
+    part of the payload.
+    """
+    resolution = grid.get("resolution", (0.0, 0.0))
+    payload = {
+        "method_version": METHOD_VERSION,
+        "analysis_schema_version": ANALYSIS_SCHEMA_VERSION,
+        "parameters": {
+            "quantity": scenes[0]["quantity"],
             "threshold_db": round(float(threshold_db), 9),
-            "min_area_ha": round(float(min_area_ha), 9),
+            "minimum_area_ha": round(float(min_area_ha), 9),
+            "speckle_min_valid_neighbours": MIN_VALID_NEIGHBOURS,
+            "label_connectivity": LABEL_CONNECTIVITY,
+            "reference_crs": grid["crs"].to_string(),
+            "reference_resolution": [round(float(value), 9) for value in resolution],
         },
-        sort_keys=True,
-    )
-    return "chg-" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+        "scenes": [
+            {
+                "id": scene["id"],
+                "acquired_at": scene["acquired_at_iso"],
+                "content_digest": scene["content_digest"],
+            }
+            for scene in scenes
+        ],
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return "chg-" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
 
 
 #: mask.tif classes: retained region, evaluable but not retained, and not evaluable.
@@ -833,6 +912,8 @@ def run_change_detection(
 
     baseline_info = inspect_raster(baseline)
     followup_info = inspect_raster(followup)
+    baseline["content_digest"] = baseline_info["content_digest"]
+    followup["content_digest"] = followup_info["content_digest"]
     grid = build_reference_grid(baseline_info, followup_info)
 
     baseline_grid = warp_to_grid(baseline_info, grid)
@@ -866,20 +947,19 @@ def run_change_detection(
         cell_area_ha > 0,
         "reference grid cells have zero geodesic area; cannot apply the minimum area filter",
     )
-    min_pixels = 0 if area == 0 else int(math.ceil(area / cell_area_ha))
 
     candidates = []
     retained_labels: List[int] = []
     for label_value in range(1, count + 1):
         component = labels == label_value
         pixel_count = int(np.count_nonzero(component))
-        if pixel_count < max(min_pixels, 1):
-            continue
+        # acceptance is decided only by the final reported geodesic polygon area, never by a
+        # cell-count estimate: the estimate is reported for context but not used to filter
         geometry = polygonise_region(component, grid["transform"], grid["crs"])
         if geometry is None:
             continue
         area_ha = _geodesic_area_ha(geometry, grid["crs"])
-        if area_ha < area and area > 0:
+        if area_ha < area:
             continue
         change_median, magnitude_median = region_change_statistics(change_db, component)
         retained_labels.append(label_value)
@@ -1026,7 +1106,7 @@ def run_change_detection(
 
     analysis = {
         "schema_version": ANALYSIS_SCHEMA_VERSION,
-        "analysis_id": _analysis_id(scenes, threshold, area),
+        "analysis_id": analysis_identity(scenes, threshold, area, grid),
         "title": (
             f"Radiometric change {baseline['date']} to {followup['date']} "
             f"({baseline['quantity']}, {baseline['polarization']}, {baseline['beam_mode']})"
@@ -1128,13 +1208,25 @@ def run_change_detection(
             "both scenes), so a global shift between the two dates stays visible as a brightness "
             "difference and the two previews are comparable to each other, but not to any external "
             "radiometric scale.",
-            f"Minimum-area filtering uses mean geodesic cell area ({cell_area_ha:.6f} ha/cell), so the "
-            "retained region set can differ marginally from an exact per-cell geodesic area filter.",
+            f"Minimum-area filtering accepts or rejects each region on its final geodesic polygon "
+            f"area (holes subtracted); the mean reference cell area ({cell_area_ha:.6f} ha/cell) is "
+            "reported for context only and is not used to decide acceptance.",
         ],
     }
     # RFC 7946 GeoJSON: WGS84 lon/lat, no crs member
     geojson = {"type": "FeatureCollection", "name": analysis["analysis_id"], "features": features}
 
+    provenance = {
+        "analysis_id": analysis["analysis_id"],
+        "method_version": METHOD_VERSION,
+        "digest_algorithm": DIGEST_ALGORITHM,
+        "input_digest_algorithm": DIGEST_ALGORITHM,
+        "input_digest_baseline": baseline["content_digest"],
+        "input_digest_followup": followup["content_digest"],
+        "threshold_db": f"{threshold:g}",
+        "minimum_area_ha": f"{area:g}",
+        "speckle_min_valid_neighbours": str(MIN_VALID_NEIGHBOURS),
+    }
     staging = _staging_dir(out_dir)
     try:
         _write_raster(
@@ -1147,6 +1239,7 @@ def run_change_detection(
                 "units": UNITS,
                 "change_definition": CHANGE_DEFINITION,
                 "nodata_semantics": "NaN = not evaluable (missing or unsupported observations)",
+                **provenance,
             },
         )
         _write_raster(
@@ -1162,6 +1255,7 @@ def run_change_detection(
                     f"{int(MASK_INVALID)} = not evaluable; 0 is a valid class (evaluable, not retained), "
                     "so unchanged ground is never nodata"
                 ),
+                **provenance,
             },
         )
         _write_png(os.path.join(staging, "before.png"), _gray_rgba(before_scaled))
@@ -1170,7 +1264,7 @@ def run_change_detection(
         _write_json(os.path.join(staging, "regions.geojson"), geojson)
         _write_json(os.path.join(staging, "analysis.json"), analysis)
         _validate_bundle(staging)
-        _publish(staging, out_dir)
+        _publish(staging, out_dir, analysis)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     return analysis
@@ -1254,27 +1348,93 @@ def _fsync_path(path: str) -> None:
         os.close(handle)
 
 
-def _publish(staging: str, out_dir: str) -> None:
-    """Move the staged bundle into place; analysis.json lands last as the completion sentinel."""
-    out_dir = os.path.abspath(out_dir)
-    os.makedirs(out_dir, exist_ok=True)
-    ordered = [name for name in REQUIRED_BUNDLE_FILES if name != "analysis.json"]
-    for name in ordered:
-        os.replace(os.path.join(staging, name), os.path.join(out_dir, name))
-    for name in ordered:
-        target = os.path.join(out_dir, name)
-        if not os.path.isfile(target):
-            raise ChangeError(f"publish failed, bundle incomplete: {name} not present in {out_dir}")
-    os.replace(os.path.join(staging, "analysis.json"), os.path.join(out_dir, "analysis.json"))
-    for name in REQUIRED_BUNDLE_FILES:
-        _fsync_path(os.path.join(out_dir, name))
-    directory = os.open(out_dir, os.O_RDONLY)
+def _fsync_dir(path: str) -> None:
     try:
-        os.fsync(directory)
+        handle = os.open(path, os.O_RDONLY)
+    except OSError:  # pragma: no cover - platform dependent
+        return
+    try:
+        os.fsync(handle)
     except OSError:  # pragma: no cover - platform dependent
         pass
     finally:
-        os.close(directory)
+        os.close(handle)
+
+
+#: Superseded generation directories kept beside the published one, so a failed run can be
+#: inspected and the previous bundle can be reverted to. Oldest beyond this are pruned.
+KEPT_SUPERSEDED_GENERATIONS = 2
+
+
+def _generation_pattern(name: str) -> str:
+    return re.compile(rf"^\.{re.escape(name)}\.gen-")
+
+
+def _prune_generations(parent: str, name: str, keep: str) -> None:
+    """Best-effort pruning of superseded generations; never touches the published pointer."""
+    published = os.path.realpath(keep) if os.path.isdir(keep) else None
+    candidates = sorted(
+        entry
+        for entry in os.listdir(parent)
+        if _generation_pattern(name).match(entry) and os.path.join(parent, entry) != published
+    )
+    for entry in candidates[: max(0, len(candidates) - KEPT_SUPERSEDED_GENERATIONS)]:
+        shutil.rmtree(os.path.join(parent, entry), ignore_errors=True)
+
+
+def _publish(staging: str, out_dir: str, analysis: Dict[str, Any]) -> None:
+    """Publish by renaming a finished generation directory and swapping one pointer at it.
+
+    Each published bundle lives in its own generation directory, and ``out_dir`` is a symlink to
+    the current one. Publication is therefore a single ``os.replace`` of that symlink: a reader
+    either resolves the old generation or the new one, and can never pair an old analysis.json
+    with new regions or previews. A crash before the swap leaves the previous bundle untouched;
+    a crash after it leaves the new bundle fully in place. Nothing is renamed over file by file.
+
+    Guarantees, and their limits:
+      * the bundle is never partially replaced in place;
+      * an interrupted publication preserves the previous bundle, which is also kept on disk;
+      * only one pointer swap is observable, so concurrent readers stay coherent;
+      * a pre-existing plain directory (from an earlier publication scheme) is migrated by
+        renaming it aside first, which has a brief window in which ``out_dir`` does not exist.
+        That one-time migration is the only non-atomic step and is reported rather than hidden.
+    """
+    out_dir = os.path.abspath(out_dir)
+    parent = os.path.dirname(out_dir) or "."
+    name = os.path.basename(out_dir)
+    os.makedirs(parent, exist_ok=True)
+    analysis_id = str(analysis.get("analysis_id") or "unknown")
+
+    generation = os.path.join(parent, f".{name}.gen-{analysis_id}")
+    if os.path.realpath(out_dir) == generation:
+        # republishing identical content: never touch the generation readers are resolving
+        generation = os.path.join(parent, f".{name}.gen-{analysis_id}-{os.getpid()}")
+    shutil.rmtree(generation, ignore_errors=True)
+    os.rename(staging, generation)
+    for bundle_file in REQUIRED_BUNDLE_FILES:
+        _fsync_path(os.path.join(generation, bundle_file))
+    _fsync_dir(generation)
+
+    pointer = os.path.join(parent, f".{name}.pointer-{os.getpid()}")
+    if os.path.lexists(pointer):
+        os.remove(pointer)
+    os.symlink(os.path.basename(generation), pointer)
+    superseded = None
+    if os.path.isdir(out_dir) and not os.path.islink(out_dir):
+        superseded = os.path.join(parent, f".{name}.superseded-{os.getpid()}")
+        os.rename(out_dir, superseded)
+    try:
+        os.replace(pointer, out_dir)
+    except OSError:
+        # the one-time migration is the only step that can leave out_dir missing; put the old
+        # directory back where readers expect it before propagating the failure
+        if superseded is not None and not os.path.lexists(out_dir):
+            os.rename(superseded, out_dir)
+        if os.path.lexists(pointer):
+            os.remove(pointer)
+        raise
+    _fsync_dir(parent)
+    _prune_generations(parent, name, out_dir)
 
 
 # --------------------------------------------------------------------------- #

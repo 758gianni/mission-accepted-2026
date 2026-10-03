@@ -119,6 +119,10 @@ Each `path` must open as a single-band **real** linear-power raster:
   of dB data) -> rejected;
 * no CRS, or a missing/degenerate transform (identity, zero or sub-micrometre
   pixel size) -> rejected;
+* a rotated or sheared geotransform (`b != 0` or `d != 0`) -> rejected before any
+  reference grid is built, because the reference grid is axis-aligned and a
+  rotation this CLI cannot verify would silently corrupt every footprint, area
+  and geometry;
 * no valid samples at all -> rejected.
 
 Both scenes must also agree on `quantity`, `polarization`, `beam_mode`,
@@ -168,9 +172,11 @@ the provenance rules below forbid.
    from the kernel mean rather than treated as zero backscatter, so a cell with a
    valid centre and 8 of 9 valid window samples keeps its full value.
 4. **Threshold and label.** `abs(change_db) >= threshold_db`, then connected
-   components with 8-neighbour connectivity, then the minimum area filter
-   (using the mean geodesic cell area, and the exact geodesic polygon area as a
-   second check). Region geometry is vectorised with **holes preserved**.
+   components with 8-neighbour connectivity, then the minimum area filter.
+   **Acceptance uses the final reported geodesic polygon area only** — never a
+   cell-count or mean-cell-area estimate, which would disagree with the number a
+   consumer reads from `regions.geojson`. A region whose geodesic area equals the
+   threshold is retained. Region geometry is vectorised with **holes preserved**.
 5. **Area.** `area_ha` is the geodesic area on the WGS84 ellipsoid of the
    thresholded pixels, with holes subtracted. The projection is only a working
    grid, never an area claim.
@@ -203,7 +209,7 @@ grid larger than 40,000,000 cells all abort before anything is published.
 | File | Content |
 | --- | --- |
 | `change.tif` | `float32` signed change in dB in the reference CRS, with real GeoTIFF nodata metadata: nodata is `NaN`, so `read(masked=True)` masks exactly the not-evaluable pixels |
-| `mask.tif` | `float32` **retained-region** mask with three classes and real nodata metadata: `1` = retained region, `0` = evaluable but not retained, `-1` = not evaluable (declared nodata) |
+| `mask.tif` | `float32` **retained-region** mask (GeoTIFF tags record `analysis_id`, the per-scene input content digests, the digest algorithm, the method version and the material parameters) | with three classes and real nodata metadata: `1` = retained region, `0` = evaluable but not retained, `-1` = not evaluable (declared nodata) |
 | `before.png` | pre-event backscatter, dB, resampled to WGS84 |
 | `after.png` | post-event backscatter, dB, resampled to WGS84 |
 | `change.png` | signed change, dB, resampled to WGS84, diverging red/blue around 0 |
@@ -238,15 +244,46 @@ percentile dB stretch whose range is recorded in `limitations`; the change
 preview is clipped at the 98th percentile of detected |dB| (never below the
 threshold).
 
-### Publishing is atomic
+### Publishing is atomic by generation swap, not file-by-file replacement
 
-The bundle is built in a staging directory next to `--out`, checked for
-completeness and internal consistency (every file present and non-empty,
-`metrics.region_count` equal to the GeoJSON feature count, feature ids matching
-`region_id`), and only then moved into place with `os.replace`, with
-`analysis.json` written **last** as the completion sentinel. A failed run leaves
-no bundle and no staging directory behind; consumers that require
-`analysis.json` to exist therefore never observe a half-bundle.
+Replacing seven files one at a time cannot be atomic: a crash between the first
+and last `os.replace` leaves an old `analysis.json` beside new regions and
+previews, which is precisely the incoherent state a concurrent reader must not
+see. So publication does not replace files in place at all.
+
+1. The bundle is staged in a scratch directory next to `--out` and checked for
+   completeness and internal consistency (every file present and non-empty,
+   `metrics.region_count` equal to the GeoJSON feature count, feature ids matching
+   `region_id`, preview bounds equal to `analysis.bbox`, the area invariants).
+2. The staged directory is renamed to its own **generation directory**,
+   `<parent>/.<name>.gen-<analysis_id>`, and fsynced. Nothing readers look at has
+   changed yet.
+3. A symlink is created at a temporary name pointing at that generation, and one
+   `os.replace` swaps it onto `--out`.
+
+Because `--out` is a symlink to a generation directory, every read resolves
+through a single pointer: a concurrent reader sees the old generation or the new
+one, never a mixture, and never an old analysis paired with new files.
+
+Guarantees, stated plainly:
+
+* the bundle is never partially replaced in place;
+* a failure before the pointer swap leaves the previous bundle exactly as it was;
+* a failure after the swap leaves the new bundle fully in place;
+* the superseded generation stays on disk (the two most recent are kept, older ones
+  pruned best-effort), so a failed publication can be inspected or reverted;
+* no bundle is published if the staging checks fail.
+
+The one non-atomic step is a **one-time migration**: if `--out` already exists as a
+plain directory — from an earlier publication scheme or from a human — a symlink
+cannot be renamed onto it, so the directory is renamed aside immediately before
+the swap. That window has no publication in flight, and if the swap fails the
+directory is renamed back before the error propagates (regression-tested with an
+injected failure). Every later publication is a single `os.replace`.
+
+Pruning superseded generations is best-effort and never touches the published
+pointer; a reader that resolved a superseded path itself (rather than through
+`--out`) could find it pruned. Readers should go through `--out`.
 
 ## Shared result bundle contract v1
 
@@ -303,6 +340,13 @@ no bundle and no staging directory behind; consumers that require
 | `historical_anomaly` | `null` |
 | `explanation` | plain-language summary, including that the cause is undetermined |
 | `time_series` | one entry per scene: `acquired_at`, `mean_backscatter_db`, `change_from_baseline_db`, `valid_fraction` |
+
+`analysis_id` covers the raster **content**, not just the scene metadata:
+`analysis.json` and the derived GeoTIFF tags record a sha256 content digest per
+scene, so two runs over byte-identical inputs produce the same id while a change to
+the samples — even with identical scene ids and timestamps — produces a different
+one. Paths and file names are deliberately excluded, so the identity does not depend
+on where the inputs live.
 
 `detected_at` is the acquisition in which the radar backscatter difference was
 **observed**, not the onset of any event. A change could have begun at any time
@@ -384,8 +428,8 @@ Every run records its own `limitations` array, which always includes at least:
    and processing effects, so magnitudes are not loss severity;
 7. the pooled before/after preview stretch is not an absolute radiometric scale; it
    is a relative rendering range shared by the two dates;
-8. the minimum area filter uses mean geodesic cell area, so the retained set can
-   differ marginally from an exact per-cell area filter;
+8. minimum-area acceptance uses each region's final geodesic polygon area; the mean
+   reference cell area is reported for context only and never decides retention;
 9. pixels with a missing original observation are unevaluable rather than
    interpolated: nodata holes and valid-mask edges appear as gaps in the region
    polygons, so a region can be interrupted by unmeasured ground.

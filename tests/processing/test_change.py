@@ -1286,6 +1286,231 @@ def test_mask_raster_is_the_retained_region_mask_with_invalid_nodata(tmp_path):
     assert analysis["metrics"]["total_changed_area_ha"] <= analysis["metrics"]["valid_area_ha"]
 
 
+def test_minimum_area_uses_the_final_geodesic_polygon_area(tmp_path):
+    # a threshold that sits between the naive cell-count estimate and the true geodesic
+    # polygon area: acceptance must follow the reported area, not the estimate
+    manifest = write_manifest(
+        tmp_path / "m.json",
+        scene(write_raster(tmp_path / "b.tif", stable_grid()), scene_id="A", acquired_at=BASELINE_ACQUIRED),
+        scene(write_raster(tmp_path / "a.tif", change_grid()), scene_id="B", acquired_at=FOLLOWUP_ACQUIRED),
+    )
+    out_dir = str(tmp_path / "out")
+    accepted = run_change_detection(manifest, out_dir, 2.0, 12.605)
+    estimate_ha = PATCH_CELLS * PIXEL_SIZE * PIXEL_SIZE / 10_000.0  # 12.60 ha
+    assert estimate_ha < 12.605 < accepted["metrics"]["total_changed_area_ha"]
+    assert accepted["metrics"]["region_count"] == 1
+    assert accepted["metrics"]["total_changed_area_ha"] >= 12.605
+
+    # just below the reported area the region survives; just above it the region is dropped
+    exact = accepted["metrics"]["total_changed_area_ha"]
+    kept = run_change_detection(manifest, str(tmp_path / "kept"), 2.0, exact)
+    assert kept["metrics"]["region_count"] == 1, "area equal to the threshold must be accepted"
+    dropped = run_change_detection(manifest, str(tmp_path / "dropped"), 2.0, exact + 0.005)
+    assert dropped["metrics"]["region_count"] == 0
+    assert dropped["metrics"]["total_changed_area_ha"] == 0.0
+
+
+def test_analysis_id_tracks_raster_content_and_parameters(tmp_path):
+    before = stable_grid()
+    after = change_grid()
+    baseline = scene(write_raster(tmp_path / "b.tif", before), scene_id="A", acquired_at=BASELINE_ACQUIRED)
+    followup = scene(write_raster(tmp_path / "a.tif", after), scene_id="B", acquired_at=FOLLOWUP_ACQUIRED)
+
+    first = run_change_detection(write_manifest(tmp_path / "m.json", baseline, followup), str(tmp_path / "one"), 2.0, 1.0)
+    # an identical rerun is deterministic and keeps the same id
+    second = run_change_detection(write_manifest(tmp_path / "m2.json", baseline, followup), str(tmp_path / "two"), 2.0, 1.0)
+    assert second["analysis_id"] == first["analysis_id"]
+
+    # same scene metadata, different raster bytes: a slightly stronger patch must change the id
+    nudged = change_grid()
+    nudged[PATCH_ROWS, PATCH_COLUMNS] *= 1.0001
+    followup_nudged = scene(
+        write_raster(tmp_path / "a2.tif", nudged), scene_id="B", acquired_at=FOLLOWUP_ACQUIRED
+    )
+    assert followup_nudged["id"] == followup["id"]
+    assert followup["id"] == followup_nudged["id"]
+    assert followup["acquired_at"] == followup_nudged["acquired_at"]
+    changed = run_change_detection(
+        write_manifest(tmp_path / "m3.json", baseline, followup_nudged), str(tmp_path / "three"), 2.0, 1.0
+    )
+    assert changed["analysis_id"] != first["analysis_id"], "raster content must be part of the identity"
+
+    # material processing parameters are part of the identity too
+    for index, (threshold, area) in enumerate(((3.0, 1.0), (2.0, 5.0), (2.0, 0.0))):
+        variant = run_change_detection(
+            write_manifest(tmp_path / f"mv{index}.json", baseline, followup),
+            str(tmp_path / f"variant{index}"),
+            threshold,
+            area,
+        )
+        assert variant["analysis_id"] != first["analysis_id"]
+
+
+def test_analysis_id_provenance_is_recorded_in_the_derived_rasters(tmp_path):
+    manifest = write_manifest(
+        tmp_path / "m.json",
+        scene(write_raster(tmp_path / "b.tif", stable_grid()), scene_id="A", acquired_at=BASELINE_ACQUIRED),
+        scene(write_raster(tmp_path / "a.tif", change_grid()), scene_id="B", acquired_at=FOLLOWUP_ACQUIRED),
+    )
+    out_dir = str(tmp_path / "out")
+    analysis = run_change_detection(manifest, out_dir, 2.0, 1.0)
+    with rasterio.open(os.path.join(out_dir, "change.tif")) as src:
+        tags = src.tags()
+    assert tags["analysis_id"] == analysis["analysis_id"]
+    assert float(tags["threshold_db"]) == 2.0
+    assert float(tags["minimum_area_ha"]) == 1.0
+    assert tags["method_version"].startswith("prepared-pair-change/")
+    assert tags["speckle_min_valid_neighbours"] == str(MIN_VALID_NEIGHBOURS)
+    assert tags["input_digest_algorithm"].startswith("sha256")
+    digests = [tags[key] for key in sorted(tags) if key.startswith("input_digest_") and "algorithm" not in key]
+    assert len(digests) == 2
+    for digest in digests:
+        assert len(digest) == 64 and all(character in "0123456789abcdef" for character in digest)
+
+
+def test_rotated_or_sheared_grids_are_rejected(tmp_path):
+    # a rotated geotransform has off-diagonal terms; the reference grid is axis-aligned, so
+    # silently treating it as axis-aligned would misreport every footprint and area
+    rotated = rasterio.Affine(30.0, 5.0, 499_980.0, 3.0, -30.0, 4_000_020.0)
+    manifest = write_manifest(
+        tmp_path / "m.json",
+        scene(write_raster(tmp_path / "b.tif", stable_grid()), scene_id="A", acquired_at=BASELINE_ACQUIRED),
+        scene(
+            write_raster(tmp_path / "a.tif", change_grid(), transform=rotated),
+            scene_id="B",
+            acquired_at=FOLLOWUP_ACQUIRED,
+        ),
+    )
+    with pytest.raises(ChangeError, match="rotated|shear"):
+        run_change_detection(manifest, str(tmp_path / "out"), 2.0, 1.0)
+
+    sheared = rasterio.Affine(30.0, -7.0, 499_980.0, 0.0, -30.0, 4_000_020.0)
+    manifest2 = write_manifest(
+        tmp_path / "m2.json",
+        scene(write_raster(tmp_path / "b2.tif", stable_grid()), scene_id="A", acquired_at=BASELINE_ACQUIRED),
+        scene(
+            write_raster(tmp_path / "a2.tif", change_grid(), transform=sheared),
+            scene_id="B",
+            acquired_at=FOLLOWUP_ACQUIRED,
+        ),
+    )
+    with pytest.raises(ChangeError, match="rotated|shear"):
+        run_change_detection(manifest2, str(tmp_path / "out2"), 2.0, 1.0)
+
+
+def test_interrupted_publication_leaves_the_old_bundle_coherent(tmp_path, monkeypatch):
+    manifest = write_manifest(
+        tmp_path / "m.json",
+        scene(write_raster(tmp_path / "b.tif", stable_grid()), scene_id="A", acquired_at=BASELINE_ACQUIRED),
+        scene(write_raster(tmp_path / "a.tif", change_grid()), scene_id="B", acquired_at=FOLLOWUP_ACQUIRED),
+    )
+    out_dir = str(tmp_path / "current")
+    original = run_change_detection(manifest, out_dir, 2.0, 1.0)
+    old_geojson = open(os.path.join(out_dir, "regions.geojson"), "rb").read()
+    old_preview = open(os.path.join(out_dir, "before.png"), "rb").read()
+
+    # a different result, published over the existing bundle
+    followup = scene(write_raster(tmp_path / "a2.tif", stable_grid()), scene_id="B", acquired_at=FOLLOWUP_ACQUIRED)
+    manifest2 = write_manifest(
+        tmp_path / "m2.json",
+        scene(write_raster(tmp_path / "b2.tif", stable_grid()), scene_id="A", acquired_at=BASELINE_ACQUIRED),
+        followup,
+    )
+    real_replace = os.replace
+
+    def exploding_replace(src, dst):
+        raise OSError("injected publication failure")
+
+    monkeypatch.setattr(os, "replace", exploding_replace)
+    with pytest.raises(OSError, match="injected publication failure"):
+        run_change_detection(manifest2, out_dir, 2.0, 1.0)
+    monkeypatch.setattr(os, "replace", real_replace)
+
+    # the old bundle is still complete and self-consistent
+    for name in ("analysis.json", "regions.geojson", "change.tif", "mask.tif", "before.png", "after.png", "change.png"):
+        assert os.path.isfile(os.path.join(out_dir, name)), f"{name} disappeared from the old bundle"
+    with open(os.path.join(out_dir, "analysis.json"), "r", encoding="utf-8") as handle:
+        surviving = json.load(handle)
+    assert surviving == original, "the old analysis must be intact after an interrupted publication"
+    with open(os.path.join(out_dir, "regions.geojson"), "rb") as handle:
+        assert handle.read() == old_geojson, "old analysis must not be paired with new regions"
+    with open(os.path.join(out_dir, "before.png"), "rb") as handle:
+        assert handle.read() == old_preview
+    assert [name for name in os.listdir(str(tmp_path)) if "staging" in name] == []
+
+
+def test_publication_swaps_one_generation_pointer(tmp_path, monkeypatch):
+    manifest = write_manifest(
+        tmp_path / "m.json",
+        scene(write_raster(tmp_path / "b.tif", stable_grid()), scene_id="A", acquired_at=BASELINE_ACQUIRED),
+        scene(write_raster(tmp_path / "a.tif", change_grid()), scene_id="B", acquired_at=FOLLOWUP_ACQUIRED),
+    )
+    out_dir = str(tmp_path / "current")
+    run_change_detection(manifest, out_dir, 2.0, 1.0)
+
+    # every reader-visible path must resolve through a single generation directory
+    generations = {
+        os.path.dirname(os.path.realpath(os.path.join(out_dir, name)))
+        for name in os.listdir(out_dir)
+        if name in ("analysis.json", "regions.geojson", "before.png", "after.png", "change.png", "change.tif", "mask.tif")
+    }
+    assert len(generations) == 1, "bundle files must all live in one generation directory"
+    generation_dir = generations.pop()
+    first_target = os.path.realpath(out_dir)
+
+    followup = scene(write_raster(tmp_path / "a2.tif", stable_grid()), scene_id="B", acquired_at=FOLLOWUP_ACQUIRED)
+    manifest2 = write_manifest(
+        tmp_path / "m2.json",
+        scene(write_raster(tmp_path / "b2.tif", stable_grid()), scene_id="A", acquired_at=BASELINE_ACQUIRED),
+        followup,
+    )
+    updated = run_change_detection(manifest2, out_dir, 2.0, 1.0)
+    assert updated["metrics"]["region_count"] == 0
+    assert os.path.realpath(out_dir) != first_target, "a new publication must move the pointer once"
+    with open(os.path.join(out_dir, "analysis.json"), "r", encoding="utf-8") as handle:
+        assert json.load(handle)["analysis_id"] == updated["analysis_id"]
+    with open(os.path.join(out_dir, "regions.geojson"), "r", encoding="utf-8") as handle:
+        assert json.load(handle)["features"] == []
+    # the superseded generation is retained, so a failed publish could be inspected or reverted
+    assert os.path.isdir(generation_dir)
+    with open(os.path.join(generation_dir, "analysis.json"), "r", encoding="utf-8") as handle:
+        assert json.load(handle)["metrics"]["region_count"] == 1
+
+
+def test_publication_migrates_a_pre_existing_real_directory(tmp_path, monkeypatch):
+    manifest = write_manifest(
+        tmp_path / "m.json",
+        scene(write_raster(tmp_path / "b.tif", stable_grid()), scene_id="A", acquired_at=BASELINE_ACQUIRED),
+        scene(write_raster(tmp_path / "a.tif", change_grid()), scene_id="B", acquired_at=FOLLOWUP_ACQUIRED),
+    )
+    out_dir = str(tmp_path / "current")
+    os.makedirs(out_dir)
+    with open(os.path.join(out_dir, "stale.txt"), "w", encoding="utf-8") as handle:
+        handle.write("left over from an earlier non-atomic publication")
+
+    real_replace = os.replace
+
+    def exploding_replace(src, dst):
+        if str(dst) == os.path.abspath(out_dir):
+            raise OSError("injected pointer-swap failure")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", exploding_replace)
+    with pytest.raises(OSError, match="injected pointer-swap failure"):
+        run_change_detection(manifest, out_dir, 2.0, 1.0)
+    monkeypatch.setattr(os, "replace", real_replace)
+
+    # the failed migration is rolled back: the old directory is back where readers expect it
+    assert os.path.isdir(out_dir) and not os.path.islink(out_dir)
+    assert os.path.isfile(os.path.join(out_dir, "stale.txt")), "migration must not destroy the old directory"
+    assert os.listdir(out_dir) == ["stale.txt"], "no bundle files may leak into the rolled-back directory"
+
+    analysis = run_change_detection(manifest, out_dir, 2.0, 1.0)
+    assert analysis["metrics"]["region_count"] == 1
+    assert os.path.isfile(os.path.join(out_dir, "analysis.json"))
+    assert os.path.isfile(os.path.join(out_dir, "regions.geojson"))
+
+
 def test_published_bundle_is_complete_and_staging_leaves_nothing(tmp_path):
     out_dir = str(tmp_path / "current")
     before_path = write_raster(tmp_path / "b.tif", stable_grid())

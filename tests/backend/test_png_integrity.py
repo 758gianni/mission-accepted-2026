@@ -16,7 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.app import create_app
-from backend import pngcheck
+from backend import pngcheck, validation
 from conftest import PNG_1X1_GRAY, analysis_document, reencode_png, write_bundle
 
 DATA_ENDPOINTS = (
@@ -29,8 +29,15 @@ DATA_ENDPOINTS = (
 
 
 def client_with_change_png(tmp_path: Path, payload: bytes) -> TestClient:
+    """Install ``payload`` as all three previews.
+
+    The previews are identically warped, so they must share one pixel grid.
+    Writing the payload to all three keeps each test focused on the PNG under
+    test rather than on the dimension rule, which has its own test.
+    """
     bundle = write_bundle(tmp_path)
-    (bundle / "change.png").write_bytes(payload)
+    for key in ("before", "after", "change"):
+        (bundle / f"{key}.png").write_bytes(payload)
     return TestClient(create_app(bundle_dir=bundle))
 
 
@@ -340,10 +347,12 @@ def _pillow_png(mode: str, size: tuple[int, int], interlace: bool = False) -> by
 
 def test_bundle_recovers_when_the_image_is_repaired(tmp_path: Path) -> None:
     bundle = write_bundle(tmp_path)
-    (bundle / "change.png").write_bytes(PNG_1X1_GRAY[:43])
+    for key in ("before", "after", "change"):
+        (bundle / f"{key}.png").write_bytes(PNG_1X1_GRAY[:43])
     client = TestClient(create_app(bundle_dir=bundle))
     assert_broken(client)
-    (bundle / "change.png").write_bytes(reencode_png(4, 4))
+    for key in ("before", "after", "change"):
+        (bundle / f"{key}.png").write_bytes(reencode_png(4, 4))
     assert client.get("/api/status").json()["state"] == "ready"
     assert client.get("/api/imagery/change").status_code == 200
 
@@ -352,10 +361,12 @@ def test_bundle_recovers_when_analysis_is_repaired(tmp_path: Path) -> None:
     import json
 
     bundle = write_bundle(tmp_path)
-    (bundle / "change.png").write_bytes(PNG_1X1_GRAY[:43])
+    for key in ("before", "after", "change"):
+        (bundle / f"{key}.png").write_bytes(PNG_1X1_GRAY[:43])
     client = TestClient(create_app(bundle_dir=bundle))
     assert_broken(client)
-    (bundle / "change.png").write_bytes(reencode_png(2, 2))
+    for key in ("before", "after", "change"):
+        (bundle / f"{key}.png").write_bytes(reencode_png(2, 2))
     (bundle / "analysis.json").write_text(json.dumps(analysis_document()))
     assert client.get("/api/status").json()["state"] == "ready"
 
@@ -372,7 +383,7 @@ def test_corrupt_swap_after_validation_is_refused(tmp_path: Path) -> None:
     bundle = write_bundle(tmp_path)
     client = TestClient(create_app(bundle_dir=bundle))
     assert client.get("/api/imagery/change").status_code == 200
-    (bundle / "change.png").write_bytes(PNG_1X1_GRAY[:43])
+    (bundle / "change.png").write_bytes(PNG_1X1_GRAY[:43] + b"\x00" * 8)
     response = client.get("/api/imagery/change")
     assert response.status_code == 503
     assert response.headers["content-type"].startswith("application/json")
@@ -382,6 +393,11 @@ def test_error_message_names_the_image_not_the_bytes(tmp_path: Path) -> None:
     message = client_with_change_png(
         tmp_path, PNG_1X1_GRAY[:43]
     ).get("/api/status").json()["message"]
-    assert "change" in message
-    assert "IHDR" not in message or "png" in message.lower()
+    # The message points at a declared preview by contract field name, never at
+    # the raw bytes or an internal tool name.
+    assert "analysis.imagery." in message
+    assert message.rstrip(")").endswith(".path")
+    assert "IHDR" not in message
+    assert "crc32" not in message
     assert "\x00" not in message
+    assert str(tmp_path) not in message

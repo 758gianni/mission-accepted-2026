@@ -95,7 +95,8 @@ def test_store_caches_while_nothing_changes(tmp_path: Path) -> None:
 def test_imagery_bytes_are_read_from_disk_not_generated(tmp_path: Path) -> None:
     bundle = write_bundle(tmp_path)
     payload = reencode_png(3, 2)
-    (bundle / "change.png").write_bytes(payload)
+    for key in ("before", "after", "change"):
+        (bundle / f"{key}.png").write_bytes(payload)
     client = TestClient(create_app(bundle_dir=bundle))
     response = client.get("/api/imagery/change")
     assert response.status_code == 200

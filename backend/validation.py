@@ -24,7 +24,7 @@ from datetime import datetime
 from urllib.parse import urlsplit
 from typing import Any, Mapping
 
-from .pngcheck import PngRejected, verify_png
+from .pngcheck import MAX_IMAGE_BYTES, PngRejected, PngInfo, verify_png
 
 ANALYSIS_FILENAME = "analysis.json"
 REGIONS_FILENAME = "regions.geojson"
@@ -89,6 +89,7 @@ class ImageryEntry:
     bounds: tuple[float, float, float, float]
     label: str
     size_bytes: int
+    info: PngInfo
 
 
 @dataclass(frozen=True)
@@ -135,7 +136,11 @@ def _text(value: Any, label: str) -> str:
 def _number(value: Any, label: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         _fail(label, "expected a number")
-    number = float(value)
+    try:
+        number = float(value)
+    except OverflowError:
+        # An integer literal too large for a double, e.g. 400 digits.
+        _fail(label, "must be a finite number")
     if not math.isfinite(number):
         _fail(label, "must be a finite number")
     return number
@@ -737,12 +742,19 @@ def resolve_imagery(
 
         if not stat_module.S_ISREG(stat.st_mode):
             _fail(label, "declared image must be a regular file")
+        if stat.st_size > MAX_IMAGE_BYTES:
+            _fail(label, "declared image is larger than the permitted preview size")
         try:
-            payload = candidate.read_bytes()
+            # Read one byte past the limit so a file that grew since lstat is
+            # still refused rather than loaded whole.
+            with candidate.open("rb") as handle:
+                payload = handle.read(MAX_IMAGE_BYTES + 1)
         except OSError:
             _fail(label, "declared image file could not be read")
+        if len(payload) > MAX_IMAGE_BYTES:
+            _fail(label, "declared image is larger than the permitted preview size")
         try:
-            verify_png(payload)
+            info = verify_png(payload)
         except PngRejected:
             _fail(label, "declared image is not a complete, decodable PNG")
         resolved[key] = ImageryEntry(
@@ -752,6 +764,7 @@ def resolve_imagery(
             bounds=bounds,
             label=text,
             size_bytes=stat.st_size,
+            info=info,
         )
     return resolved
 
@@ -808,6 +821,16 @@ def cross_check(
             _fail(
                 f"analysis.imagery.{key}.bounds",
                 "does not match the validated imagery entry",
+            )
+
+    reference = imagery[IMAGERY_KEYS[0]].info
+    for key in IMAGERY_KEYS[1:]:
+        other = imagery[key].info
+        if (other.width, other.height) != (reference.width, reference.height):
+            _fail(
+                f"analysis.imagery.{key}.path",
+                f"must have the same pixel dimensions as "
+                f"{IMAGERY_KEYS[0]}.png ({reference.width}x{reference.height})",
             )
 
 

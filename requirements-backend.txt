@@ -5,6 +5,7 @@
 fastapi>=0.110,<1.0        # 0.142.2
 pydantic>=2.6,<3.0         # 2.13.5
 uvicorn>=0.27,<1.0         # 0.53.0
+Pillow>=10.0               # 12.3.0  (required: previews are verified by decoding)
 
 # Test-only dependencies.
 pytest>=8.0                # 9.1.1

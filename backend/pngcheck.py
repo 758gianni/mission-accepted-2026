@@ -125,27 +125,63 @@ def _row_bytes(width: int, bits_per_pixel: int) -> int:
     return (width * bits_per_pixel + 7) // 8
 
 
-def _expected_raw_length(
+def _scanline_layout(
     width: int, height: int, bits_per_pixel: int, interlaced: bool
-) -> int:
+) -> list[tuple[int, int]]:
+    """``(rows, row_bytes)`` for each Adam7 pass, or one pass when not interlaced.
+
+    The rows are contiguous in the inflated stream, so this is what lets every
+    scanline's filter byte be checked.
+    """
     if not interlaced:
-        return height * (1 + _row_bytes(width, bits_per_pixel))
-    total = 0
+        return [(height, _row_bytes(width, bits_per_pixel))]
+    layout: list[tuple[int, int]] = []
     for x_start, y_start, x_step, y_step in _ADAM7:
         pass_width = 0 if width <= x_start else (width - x_start + x_step - 1) // x_step
         pass_height = 0 if height <= y_start else (height - y_start + y_step - 1) // y_step
         if pass_width and pass_height:
-            total += pass_height * (1 + _row_bytes(pass_width, bits_per_pixel))
-    return total
+            layout.append((pass_height, _row_bytes(pass_width, bits_per_pixel)))
+    return layout
+
+
+def _check_scanline_filters(raw: bytes, layout: list[tuple[int, int]]) -> None:
+    """Every scanline must start with a defined PNG filter type.
+
+    Filter 5 and above do not exist. A file can inflate to exactly the right
+    length and carry nonsense filter bytes and still look structurally perfect
+    to a chunk walker, so this is checked explicitly rather than trusted.
+    """
+    offset = 0
+    for rows, row_bytes in layout:
+        stride = 1 + row_bytes
+        for _ in range(rows):
+            if raw[offset] > 4:
+                _reject("declared image has an invalid scanline filter type")
+            offset += stride
 
 
 def verify_png(data: bytes) -> PngInfo:
-    """Fully verify that ``data`` is a decodable PNG, or raise PngRejected.
+    """Verify ``data`` structurally and then decode it for real.
+
+    ``decode_check`` is mandatory, so a bundle is only ever served when a real
+    decoder has read every pixel.
+    """
+    info = verify_png_structure(data)
+    decode_check(data)
+    return info
+
+
+def verify_png_structure(data: bytes) -> PngInfo:
+    """Structural verification of a PNG, without decoding it.
 
     Verifies the signature, the chunk framing, every chunk CRC, the IHDR
     geometry and bit depth, the presence and consecutiveness of IDAT, that the
-    pixel stream inflates cleanly to exactly the declared size, and that the
-    stream ends exactly at the end chunk.
+    pixel stream inflates cleanly to exactly the declared size, that the deflate
+    stream is complete with a verified checksum, and that every scanline
+    declares one of the five defined filter types.
+
+    Exposed separately so these guarantees can be tested directly rather than
+    being masked by the decoder step.
     """
     if len(data) > MAX_IMAGE_BYTES:
         _reject("declared image is larger than the permitted preview size")
@@ -212,7 +248,8 @@ def verify_png(data: bytes) -> PngInfo:
         _reject("declared image contains no pixel data")
 
     bits_per_pixel = bit_depth * _CHANNELS[colour_type]
-    expected = _expected_raw_length(width, height, bits_per_pixel, bool(interlace))
+    layout = _scanline_layout(width, height, bits_per_pixel, bool(interlace))
+    expected = sum(rows * (1 + row_bytes) for rows, row_bytes in layout)
     if expected > MAX_PIXEL_BYTES:
         _reject("declared image expands to an unreasonable size")
 
@@ -227,10 +264,14 @@ def verify_png(data: bytes) -> PngInfo:
     raw += tail
     if decompressor.unused_data:
         _reject("declared image has trailing compressed data")
+    if not decompressor.eof:
+        # The deflate stream ended without its trailing adler32 checksum.
+        _reject("declared image pixel data is truncated")
     if len(raw) != expected:
         _reject("declared image pixel data does not match its declared geometry")
+    _check_scanline_filters(raw, layout)
 
-    info = PngInfo(
+    return PngInfo(
         width=width,
         height=height,
         bit_depth=bit_depth,
@@ -238,18 +279,23 @@ def verify_png(data: bytes) -> PngInfo:
         interlaced=bool(interlace),
         size_bytes=len(data),
     )
-    _cross_check_with_pillow(data)
-    return info
 
 
-def _cross_check_with_pillow(data: bytes) -> None:
-    """Decode with Pillow when present. Never required, never fatal on import."""
+def decode_check(data: bytes) -> None:
+    """Decode the image for real with Pillow.
+
+    Pillow is a runtime requirement of this service (see
+    requirements-backend.txt). The structural checks above are defence in depth,
+    but they cannot reconstruct pixels, so the genuine decoder is required
+    rather than optional: a bundle is only served when a real decoder has read
+    every pixel.
+    """
     try:
         import io
 
         from PIL import Image, UnidentifiedImageError
     except ImportError:
-        return
+        _reject("no PNG decoder is available to verify the declared image")
     try:
         with Image.open(io.BytesIO(data)) as image:
             image.load()
@@ -265,5 +311,7 @@ __all__ = [
     "PNG_SIGNATURE",
     "PngInfo",
     "PngRejected",
+    "decode_check",
     "verify_png",
+    "verify_png_structure",
 ]

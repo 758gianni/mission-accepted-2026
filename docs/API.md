@@ -40,6 +40,14 @@ environment/default bundle directory.
 CORS is restricted to exactly the configured origins; requests from any other
 `Origin` get no `Access-Control-Allow-Origin` header.
 
+Preflight is answered. `OPTIONS` on any route from an allowed origin returns
+`204` with `Access-Control-Allow-Origin`, `Access-Control-Allow-Methods:
+GET, HEAD, OPTIONS` and `Access-Control-Allow-Headers: Accept, Content-Type`,
+so a browser will actually let the frontend call the API. Only `GET` and `HEAD`
+are answered as a requested method, and no write verb is ever advertised, so the
+API stays read-only; `POST`/`PUT`/`PATCH`/`DELETE` on any route remain `405`. A
+preflight from a disallowed origin gets no allow header and no `204`.
+
 ## Bundle states
 
 `GET /api/status` distinguishes three states. The frontend should branch on
@@ -276,8 +284,17 @@ Derived numbers a producer may legitimately round are compared with
 
 **Numbers and dates**
 
-- Every number is finite: `NaN` and `Infinity` are rejected, whether they arrive
-  as JSON literals or as values.
+- Every number is finite, everywhere. `NaN` and `Infinity` literals are
+  rejected, and the JSON reader is given a `parse_float` guard so an overflowing
+  literal such as `1e400` or `1e999` is refused **at parse time**, including
+  inside unknown extension keys that no field validator ever inspects. Integer
+  literals too large for a double (for example 400 digits) are refused too.
+  This matters because a non-finite number that slips through is not merely
+  wrong data: it makes the response fail while it is being serialised, which
+  turns a broken bundle into a `500` instead of a reported `error` / `503`.
+  Legal extension keys are untouched: arbitrary nested objects, arrays, nulls
+  and large but finite numbers such as `1e308` still load and are served
+  verbatim.
 - Areas are non-negative; `valid_fraction` and a `persistence.rate` are within
   `[0, 1]`; `changed_observations <= observations_after_detection`.
 - Dates are ISO 8601 **UTC** (`...Z` or `+00:00`); other offsets and
@@ -356,6 +373,9 @@ adjusted; every served number is the one the analysis declared.
 - Sizes are bounded, so a broken or hostile file cannot make the service
   allocate without end: at most 32 MiB per preview, 8 MiB per chunk, 128 MiB of
   decompressed pixel data and 100000 per dimension. Anything larger is refused.
+  The file size is checked from its `stat` **before** the bytes are read, and
+  the read itself is capped one byte past the limit, so an oversize preview is
+  never materialised in memory.
 - Pillow is an optional extra cross-check. It is never required: the checks are
   implemented against the standard library, so no dependency was added.
 - The per-read hot path re-checks containment, the size bound and the signature;

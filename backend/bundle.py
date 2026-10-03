@@ -63,13 +63,32 @@ def _read_json(path: Path, label: str) -> Any:
     except (OSError, UnicodeDecodeError):
         raise BundleValidationError(label, "required file could not be read") from None
     try:
-        return json.loads(raw, parse_constant=_reject_constant)
+        return json.loads(
+            raw, parse_constant=_reject_constant, parse_float=_finite_float
+        )
     except ValueError:
         raise BundleValidationError(label, "is not valid JSON") from None
 
 
 def _reject_constant(name: str) -> Any:
+    """Reject the non-standard NaN and Infinity literals."""
     raise ValueError(f"non-finite JSON constant: {name}")
+
+
+def _finite_float(raw: str) -> float:
+    """Refuse a numeric literal that overflows to infinity.
+
+    ``parse_float`` is the only place every float in the document passes
+    through, including numbers under unknown extension keys that no field
+    validator ever looks at. Without this guard an overflowing literal such as
+    ``1e400`` parses to ``inf``, survives validation, and then fails while the
+    response is serialised, turning a broken bundle into a 500 instead of a
+    reported error.
+    """
+    value = float(raw)
+    if value != value or value in (float("inf"), float("-inf")):
+        raise ValueError(f"non-finite JSON number: {raw}")
+    return value
 
 
 def load_bundle(bundle_dir: Path) -> BundleSnapshot:

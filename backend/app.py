@@ -89,19 +89,36 @@ def create_app(
     app.state.bundle_dir = resolved_dir
     app.state.cors_origins = resolved_origins
 
+    allowed_methods = "GET, HEAD, OPTIONS"
+    allowed_headers = "Accept, Content-Type"
+
+    def preflight(origin: str) -> Response:
+        response = Response(status_code=204)
+        response.headers["access-control-allow-origin"] = origin
+        response.headers["vary"] = "Origin, Access-Control-Request-Method, Access-Control-Request-Headers"
+        response.headers["access-control-allow-methods"] = allowed_methods
+        response.headers["access-control-allow-headers"] = allowed_headers
+        response.headers["access-control-max-age"] = "600"
+        response.headers["x-content-type-options"] = "nosniff"
+        return response
+
     @app.middleware("http")
     async def _restricted_cors(request: Request, call_next):  # type: ignore[no-untyped-def]
         origin = request.headers.get("origin")
-        if origin and origin in app.state.cors_origins:
-            response = await call_next(request)
+        permitted = bool(origin) and origin in app.state.cors_origins
+        if permitted and request.method == "OPTIONS":
+            # Answer the preflight here. No route handles OPTIONS, so without
+            # this an allowed origin sees 405 and the browser refuses the call.
+            requested = request.headers.get("access-control-request-method", "GET")
+            if requested.upper() in {"GET", "HEAD"}:
+                return preflight(origin)
+        response = await call_next(request)
+        if permitted:
             response.headers["access-control-allow-origin"] = origin
             response.headers["vary"] = "Origin"
-            response.headers["access-control-allow-methods"] = "GET, HEAD, OPTIONS"
-            response.headers["access-control-allow-headers"] = "Accept, Content-Type"
+            response.headers["access-control-allow-methods"] = allowed_methods
+            response.headers["access-control-allow-headers"] = allowed_headers
             response.headers["access-control-max-age"] = "600"
-            response.headers.setdefault("x-content-type-options", "nosniff")
-            return response
-        response = await call_next(request)
         response.headers.setdefault("x-content-type-options", "nosniff")
         return response
 

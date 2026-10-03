@@ -5,29 +5,45 @@
 **Frontend source is not edited here.** No UI components, no presentation mocks,
 no fixtures for display.
 
-## Status: not a certified contract
+## Status: not a certified contract, and not auto-certifying
 
-This handoff was written from four **published** heads that were inspected
-locally with `git show`, not from a running service:
+The **reference API head is now `a3f94b345434cfc76bddefb4a3e0d6692957ccff`**, and
+the producer contract is unchanged at `b8d9059dc23efaf122ee85bd4403bcb1df350ce1`.
 
-| Concern | Head |
-| --- | --- |
-| HTTP API, validation, models | `87cfacb58d5c4896389eb80749e6222f687db4cb` |
-| Producer (change → bundle) | `b8d9059dc23efaf122ee85bd4403bcb1df350ce1` |
-| Integration decisions | `237d45ea506dc17d3b348f93b7cc13dfa5801ff3` |
-| Catalog scene selection | `dd44fa12d15893c5474f382f0e1fa9839f231308` |
+| Concern | Head | Locally inspected? |
+| --- | --- | --- |
+| HTTP API, validation, models (reviewed reference) | `a3f94b345434cfc76bddefb4a3e0d6692957ccff` | **No** |
+| HTTP API — newest head actually verifiable here | `87cfacb58d5c4896389eb80749e6222f687db4cb` | Yes |
+| Producer (change → bundle) | `b8d9059dc23efaf122ee85bd4403bcb1df350ce1` | Yes |
+| Integration decisions | `237d45ea506dc17d3b348f93b7cc13dfa5801ff3` | Yes |
+| Catalog scene selection | `dd44fa12d15893c5474f382f0e1fa9839f231308` | Yes |
 
-The API, acquisition and inventory authors were **still correcting review
-findings** when this was written. So the fields below describe what those heads
-actually declare; they are **not** a sign-off that final API compatibility is
-achieved. Anything that shows up as missing or renamed at integration time is a
-contract question for the backend owner — resolve it upstream, do not paper over
-it in the dashboard. A running service also publishes the same contract
-machine-readably at `/openapi.json`.
+**The reviewed head `a3f94b3` could not be inspected.** The object is absent from
+this clone's object store and no ref points to it, and no fetch or authentication
+was attempted. So:
+
+* Every **field-level** statement and the TypeScript parity check below are
+  verified against `87cfacb`, the newest API head actually available locally.
+* Every **behavioural** correction attributed to review below is marked
+  *reported by review* and is **unverified against source**. Treat it as the
+  reviewer's statement of `a3f94b3`'s behaviour, not as something re-read from
+  code.
+* This document **does not auto-certify against a head it cannot see.** If a
+  further API head appears, do not treat this as current: re-run the parity
+  check against it and re-confirm every *reported by review* claim first.
+
+There is also an **open producer blocker** — see section 12. Producer/API
+agreement is **not complete**, so this contract is **not final** regardless of
+the reference head above.
+
+Anything that shows up as missing or renamed at integration time is a contract
+question for the backend owner — resolve it upstream, do not paper over it in the
+dashboard. A running service also publishes the same contract machine-readably
+at `/openapi.json`.
 
 No real prepared RADARSAT-2 inputs exist in the repository yet, so nothing here
 has been exercised against a real bundle. Every number in this document was read
-from source, never invented.
+from source or attributed to review, never invented.
 
 `contracts/forestwatch.ts` contains the TypeScript types and one short fetch
 example for these endpoints. It type-checks under `tsc --strict`.
@@ -180,7 +196,9 @@ Consequences the dashboard must not get wrong:
 All three are ISO 8601 **UTC** (`Z` or `+00:00`); other offsets and date-only
 strings are rejected by the validator. Each must name the `acquired_at` time of
 a scene in `analysis.scenes`, so every displayed time is tied to a real
-acquisition rather than an inferred date.
+acquisition rather than an inferred date. Reported by review for the reference
+head `a3f94b3`, **actual dates are validated**; that is consistent with what is
+verifiable at `87cfacb` but could not be re-read at `a3f94b3` (see section 11).
 
 | Field | Meaning | Must satisfy |
 | --- | --- | --- |
@@ -213,13 +231,37 @@ average a change date between them.
   totals. `total_changed_area_ha` equals the sum of the served regions'
   `area_ha` and never exceeds `valid_area_ha`.
 
+* **`method.threshold_db` is a strictly positive ABSOLUTE per-pixel threshold.**
+  A pixel is retained when `abs(change_db) >= threshold_db`, so the threshold
+  selects on **magnitude and never on sign**. It is always `> 0` and always
+  caller-supplied; the producer has no default. Never render it as a signed
+  quantity, and never compare `change_db` against it without taking the absolute
+  value first.
+
 **`change_db` and `magnitude_db` are two different statistics.**
-`change_db` is the *signed median* of per-pixel dB change; `magnitude_db` is the
-*median of the absolute* per-pixel dB change. `median(|x|)` is not
+`change_db` is the **signed median** of per-pixel dB change; `magnitude_db` is the
+**median of the absolute** per-pixel dB change. `median(|x|)` is not
 `|median(x)|`, so a region containing both brightening and darkening pixels keeps
 its dominant sign in `change_db` while `magnitude_db` stays at the median
 absolute value. The two need not agree. Display both, labelled; never derive one
 from the other and never assume `magnitude_db === Math.abs(change_db)`.
+
+Because the threshold is applied **per pixel to the absolute value** while
+`change_db` is a **region-level signed median**, the reported `change_db`:
+
+* can be **0.0** — when a region's pixels balance brightening against darkening
+  the median lands at zero; and
+* can be **mixed in sign across regions** — one region's median is negative,
+  another's positive.
+
+`change_db === 0.0` does **not** mean "no change". Every pixel in a retained
+region satisfied `|change_db| >= threshold_db > 0`, so a zero median means the
+region *contains both directions of change*, not that it contains none. Render
+`0.0` as the signed median it is; never collapse it to "unchanged", and never use
+it to suppress or drop a region.
+
+`magnitude_db` is always `>= 0` and, for a retained region, at least
+`threshold_db`.
 
 ## 8. Priority score
 
@@ -245,12 +287,42 @@ With exactly two acquisitions, which is what the producer emits today:
   `observations_after_detection: 0`, `changed_observations: 0` and
   `rate: null`.
 * `historical_anomaly` is always `null`.
-* `time_series[].change_from_baseline_db` is `null` on the baseline acquisition
-  itself.
+* `time_series[].change_from_baseline_db` is **`0.0` at the baseline acquisition**
+  itself whenever the baseline value is valid. See below.
 
-These are **unavailable, not zero**. A `0` rate would assert that nothing
-changed after detection; a `0` anomaly would assert that nothing unusual ever
-happened before it. Neither is supportable from two dates.
+### `change_from_baseline_db` at the baseline date is `0.0`, not `null`
+
+**Corrected.** Earlier text in this document said the baseline point is `null`.
+That was wrong.
+
+`change_from_baseline_db` is `mean_backscatter_db` for that acquisition minus the
+**baseline scene's** `mean_backscatter_db` for the same region. At the baseline
+acquisition the two are the same measurement, so the value is **`0.0`** whenever
+the baseline value is valid.
+
+That `0.0` is a **real computed difference against the baseline reference**. It
+is:
+
+* **not** an invented value substituted for a missing observation, and
+* **not** a claim of historical stability — it says nothing about what happened
+  before the baseline date. Two scenes cannot support that claim.
+
+`change_from_baseline_db` remains **`null`** when the baseline value is genuinely
+unavailable — for example when the region had no valid ROI support in the baseline
+scene. So at the baseline date:
+
+| Value | Meaning | Render as |
+| --- | --- | --- |
+| `0.0` | computed; no difference from the baseline reference | `0.0 dB` |
+| `null` | not computable, no valid baseline value for this region | "not assessed" |
+
+Keep those two apart. Do not default one to the other, and do not treat the
+`0.0` as evidence that the region was stable before the baseline.
+
+These two-date values are otherwise **unavailable, not zero**. A `0` persistence
+rate would assert that nothing changed after detection; a `0` anomaly would assert
+that nothing unusual ever happened before it. Neither is supportable from two
+dates.
 
 How to render:
 
@@ -300,27 +372,57 @@ must be treated as untrusted plain text.
 Treat these as open, and confirm with the API owner before building UI that
 depends on them:
 
-1. **Whole-contract certification.** The API head above was still being corrected
-   after review. Field names, nullability and error codes may move.
-2. **Acquisition and inventory provenance fields.** Not part of this contract and
+1. **Whole-contract certification, and no auto-certification.** The reference head
+   is `a3f94b3`, which could **not** be inspected locally (absent object, no ref,
+   no fetch attempted). Field-level statements are verified against `87cfacb`
+   only. If any further API head appears, re-run the parity check against it and
+   re-confirm every *reported by review* claim before treating this as current.
+2. **New behaviours attributed to review, unverified against source.** Reported
+   by review for `a3f94b3`, and not observable at `87cfacb`:
+   * **Actual dates are validated.** Timestamps continue to have to name the
+     `acquired_at` of a real scene in `analysis.scenes`, so every displayed time
+     is tied to a real acquisition. Nothing in the contract infers a date.
+   * **Persistence behaviour** is unchanged: a two-date run reports
+     `not_evaluable` with a `null` rate.
+   * **The source URL is validated** (`scene.catalog_url` must be a valid
+     source URL), so a malformed link fails the bundle rather than reaching the
+     dashboard. This is why scheme checking is documented as a defensive runtime
+     guard rather than as the primary protection.
+3. **Acquisition and inventory provenance fields.** Not part of this contract and
    not included here.
-3. **No structured preview-stretch field.** The shared before/after range is only
+4. **No structured preview-stretch field.** The shared before/after range is only
    available as text in `imagery.*.label` and `limitations`. If the UI needs it as
    data (a colour bar, a shared legend), that is a contract addition request, not
    a frontend workaround.
-4. **Imagery `url` is API-added, not bundle-declared.** A client reading
+5. **Imagery `url` is API-added, not bundle-declared.** A client reading
    `analysis.json` from disk would not see it. Anything else the API injects is
    possible; treat `/api/analysis` as the schema of record.
-5. **`demo_region_id` is always `null` today.** Preselection behaviour is
+6. **`demo_region_id` is always `null` today.** Preselection behaviour is
    unexercised.
-6. **Persistence/anomaly are structurally specified but never exercised.** Their
+7. **Persistence/anomaly are structurally specified but never exercised.** Their
    non-null `"observed"` branch has no producer today, so it is untested against
    a real bundle.
-7. **Untested against real data.** No real prepared RADARSAT-2 products exist
+8. **Untested against real data.** No real prepared RADARSAT-2 products exist
    locally yet; `regions.geojson` and `analysis.json` have only been validated
    against synthetic fixtures.
 
-## 12. What not to build
+## 12. Open blocker: producer `relative_orbit` float vs integer
+
+**Producer/API agreement is not complete. Do not treat the contract as final.**
+
+At `87cfacb` the API validates `scene.relative_orbit` as an **integer** or
+`null`, while the producer's manifest schema permits a **finite number** or
+`null`. A JSON float such as `98.0` is not an `int` in Python terms, so such a
+bundle fails validation and surfaces as `state: "error"` with `503` on the data
+endpoints — for this field alone, with nothing else wrong.
+
+The producer fix is **under way**. Until it lands (emit an integer, or `null`),
+assume a bundle built today may fail to serve. This is recorded here rather than
+worked around: the dashboard cannot detect it, because the failure appears as a
+generic `error` state. If the dashboard sees `state: "error"`, report the message
+verbatim rather than assuming the bundle is merely mid-write.
+
+## 13. What not to build
 
 * No frontend edits, no presentation mocks, no UI features from this work
   package.
@@ -339,6 +441,9 @@ depends on them:
   `backend/models.py`, `backend/validation.py`, `backend/app.py`,
   `backend/bundle.py` at `87cfacb`, and `processing/change.py` plus
   `docs/CHANGE.md` at `b8d9059`, by reading those trees locally.
+* The reviewed head `a3f94b3` **could not be checked**: the object is absent from
+  the local store and no ref points to it. No fetch or authentication was
+  attempted, and no claim above is presented as verified against it.
 * `contracts/forestwatch.ts` type-checks with
   `tsc --noEmit --strict --target es2022 --module esnext --moduleResolution bundler --lib es2022,dom`
   (TypeScript 7.0.2) with no diagnostics.

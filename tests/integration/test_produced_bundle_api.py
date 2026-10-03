@@ -262,7 +262,10 @@ def _assert_declared_urls(served: dict[str, Any]) -> dict[str, dict[str, Any]]:
         assert query["analysis_id"] == [served["analysis_id"]], (
             f"{key}: the declared URL must name analysis {served['analysis_id']}, got {entry['url']!r}"
         )
-        assert entry["path"] == f"{key}.png" and Path(parts.path).name == entry["path"]
+        # the route segment is the imagery key; the file on disk is "<key>.png".
+        # These are deliberately different names and must not be conflated.
+        assert Path(parts.path).name == key, f"{entry['url']!r} must address the {key} route"
+        assert entry["path"] == f"{key}.png", f"{key}: the declared file name must be {key}.png"
         parsed[key] = {"url": entry["url"], "parts": parts, "query": query, "entry": entry}
     return parsed
 

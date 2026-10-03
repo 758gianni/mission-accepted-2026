@@ -38,15 +38,24 @@ python -m pytest tests/integration -q
 | Missing / nodata | `not_evaluable_area_ha > 0`; the reported hectares match the share of cells the published `change.tif` leaves without an observation; the missing interior block is really missing; `mask.tif` declares real nodata metadata and marks those cells |
 | Hole handling | an unchanged block inside the changed patch survives as a polygon interior ring; `area_ha` subtracts it (12.6101 ha outer ring vs 11.1689 ha reported) and equals the geodesic area of the shipped geometry |
 | Tiny-region filter | `min_area_ha = 0` serves both generated patches (12.6101 ha + 0.4504 ha); `min_area_ha = 0.5` serves only the large one; the `analysis_id` records the parameter |
-| Previews | served bytes are the produced PNGs byte for byte, `image/png`, real RGBA images >1 px, `url` fields correct, unknown imagery key `404`; all three PNGs share one grid size; `imagery.*.bounds == analysis.bbox` exactly and matches the published `change.tif` extent in WGS84; before/after declare one shared pooled stretch |
+| Previews | the API **declares** its own preview URLs and the tests consume them: each must be same-origin (no scheme/netloc), address exactly `/api/imagery/{key}` for its own key, declare `path == "<key>.png"`, and carry exactly `analysis_id=<the served analysis_id>`; served bytes are the produced PNGs byte for byte, `image/png`, real RGBA images >1 px, bounds equal `analysis.bbox`; all three PNGs share one grid size; unknown imagery key `404`; before/after declare one shared pooled stretch |
 | Corruption / repair | invalid `analysis.json`, `region_count` mismatch, `total_changed_area_ha` that does not reconcile, a non-PNG preview, a half-published bundle (missing `regions.geojson`) and a symlinked bundle directory all become `error` with `503` on data endpoints, then `ready` again after repair, no restart |
+| Generation safety | after a second producer run into the same bundle directory, the new `analysis_id` differs, the newly declared URLs differ, the **superseded** URLs answer `409 Conflict` and never return the new bytes, and the current URLs return exactly the current bytes; separately, previews written *ahead* of their analysis document are never served under the old analysis id (either the old bytes or a refusal, never the new ones) |
+| Containment | absolute (`/etc/passwd`), escaping (`../outside.png`), nested (`previews/before.png`) and directory-like (`before.png/`) declared paths are refused with `error` + `503`; a symlinked preview inside the bundle is refused; every status message is checked for path sanitisation (no bundle path, no outside path, no temp root) without asserting the exact wording |
 | UTC dates | served timestamps are `Z`-suffixed UTC; a `+00:00` manifest input is normalised (not echoed); the two acquisitions are distinct UTC dates and strictly ascending; `baseline_at` < `detected_at`, `observation_interval` brackets them, `time_series` is ascending; a `+01:00` acquisition is refused by the producer and nothing is published |
 | Unavailable stays unavailable | `persistence.status == "not_evaluable"`, `rate` serialised as `null` (never `0`), `observations_after_detection == 0`, `historical_anomaly` `null` |
 | No invented content | no `confidence`/`probability`/`likelihood`/`deforestation`/`forest_loss`/`cause`/`severity_score`/`risk` key anywhere in the served documents; every served explanation disclaims causation; no "confidence"/"confirmed deforestation" phrasing |
 | Areas in hectares | `total_changed_area_ha == sum(served region area_ha)`, `valid + not_evaluable == analysis_area`, changed `<= valid`, `scene_count == len(scenes) == 2`, each `area_ha == geodesic area of its own geometry` - for all five scenarios |
 | Read-only surface | OpenAPI exposes no verb other than GET/HEAD/OPTIONS; POST/PUT/DELETE rejected; serving the bundle does not mutate a single file in it |
 
-## Observed mismatch (blocks the slice)
+## Resolved mismatch (was: blocked the slice)
+
+`relative_orbit` was written by the producer as a JSON float and validated by the
+API as an int, so every produced bundle was refused. This is reported fixed in the
+current producer/API heads; the tests below still use `relative_orbit: 12345` in the
+fixture manifest so a regression is caught.
+
+## Observed mismatch at the published reference heads
 
 **One defect, found against the published reference heads.** Reference
 composition used (scratch only, never committed): integration setup
@@ -55,9 +64,13 @@ composition used (scratch only, never committed): integration setup
 `b8d9059dc23efaf122ee85bd4403bcb1df350ce1`, environment from the integration
 `pyproject.toml` / `uv.lock`.
 
-Each author's own suite passes in that composition (`tests/backend` +
-`tests/processing`: **186 passed**), yet the end-to-end suite fails **24 of 26**
-with one shared root cause:
+**Status: this is historical.** The lead verified the composite producer
+`50f4b48379700c85a10f18f78db397ccf98bacac` + API
+`b109bfc739642140bad2db297a3332fd61445a93` with this suite: 378 passed, 3 failed,
+7.70 s, and the real bundle now reaches `/api/analysis` and `/api/regions`. The
+three failures were contract evolution, not product defects, and this file has
+been updated accordingly (see the two sections below). The following was observed
+against the earlier pair and is kept only to document what changed:
 
 ```
 relative_orbit: producer emits a JSON float, API requires an int
@@ -97,6 +110,36 @@ test file) all **26** integration tests pass against the same two heads, and the
 two tests that pass even with the defect are the ones that assert the *negative*
 states (`state == "error"` for a symlinked bundle directory, and a half-published
 bundle being refused).
+
+## Contract evolution this suite now enforces (was the 3 failures)
+
+1. **Generation-scoped preview URLs.** The API no longer hardcodes
+   `/api/imagery/{key}`; it declares a URL carrying the current
+   `analysis_id` (`?analysis_id=chg-*`) so a client cannot be handed a preview
+   from a superseded run. The tests now consume the *declared* URL and assert its
+   shape (same origin, own key path, `<key>.png` name, exactly one
+   `analysis_id` query parameter equal to the served `analysis_id`) instead of
+   comparing against a hardcoded string.
+2. **Stale generation is refused.** After a second producer run into the same
+   bundle directory, the previous URLs must answer `409 Conflict` and must never
+   return the new bytes; the current URLs must return exactly the current bytes.
+   The reverse interleaving is covered too: previews written before their
+   `analysis.json` must not be served under the old analysis id.
+3. **Sanitised status messages.** The message is now a relative contract pointer.
+   The tests assert the invariant instead of the wording: the message is non-empty
+   and leaks no filesystem path (bundle dir, symlink target, temp root, or the
+   rejected path candidate itself). Exact wording is deliberately not asserted.
+
+### Known gap, not hidden by the tests
+
+Generation *root* replacement (previews moving to a per-generation directory
+instead of the flat `before.png` / `after.png` / `change.png` inside the bundle
+directory) is still under API review. Until then, an in-place swap of the PNG
+bytes while the old `analysis.json` is still published is possible;
+`test_stale_analysis_json_is_never_paired_with_new_imagery` asserts the invariant
+that must hold regardless - the new bytes must never be served under the
+superseded analysis id - so the gap shows up as a failure rather than being
+hidden.
 
 ## Observed behaviour worth knowing (not defects)
 

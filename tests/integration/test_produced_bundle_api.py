@@ -32,6 +32,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import parse_qs, urlsplit
 
 import numpy as np
 import pytest
@@ -101,6 +102,7 @@ BASELINE_ISO = "2026-03-04T10:15:00Z"
 FOLLOWUP_ISO = "2026-09-19T10:15:00Z"
 
 THRESHOLD_DB = 2.0
+IMAGERY_KEYS = ("before", "after", "change")
 GEOD = Geod(ellps="WGS84")
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
@@ -235,6 +237,36 @@ def _parse_utc(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
 
 
+def client_url_is_absolute(url: str) -> bool:
+    """True when the declared URL leaves this origin (an absolute or //-prefixed URL)."""
+    parts = urlsplit(url)
+    return bool(parts.scheme or parts.netloc)
+
+
+def _assert_declared_urls(served: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """The API declares its own preview URLs; check shape, not a hardcoded spelling.
+
+    Each declared URL must be same-origin, address exactly its own imagery key,
+    and name the analysis generation it belongs to, so a client can never be
+    handed a preview from a superseded run.
+    """
+    assert set(served["imagery"]) == set(IMAGERY_KEYS)
+    parsed: dict[str, dict[str, Any]] = {}
+    for key in IMAGERY_KEYS:
+        entry = served["imagery"][key]
+        parts = urlsplit(entry["url"])
+        assert not parts.scheme and not parts.netloc, f"{entry['url']!r} must be a same-origin URL"
+        assert parts.path == f"/api/imagery/{key}", f"{entry['url']!r} must address the {key} preview"
+        query = parse_qs(parts.query)
+        assert set(query) == {"analysis_id"}, f"{entry['url']!r} must carry exactly analysis_id"
+        assert query["analysis_id"] == [served["analysis_id"]], (
+            f"{key}: the declared URL must name analysis {served['analysis_id']}, got {entry['url']!r}"
+        )
+        assert entry["path"] == f"{key}.png" and Path(parts.path).name == entry["path"]
+        parsed[key] = {"url": entry["url"], "parts": parts, "query": query, "entry": entry}
+    return parsed
+
+
 def _evaluable_cells(bundle_dir: Path) -> np.ndarray:
     """Cells of the published change raster that carry a dB observation."""
     with rasterio.open(bundle_dir / "change.tif") as src:
@@ -310,11 +342,17 @@ def test_changed_pair_analysis_is_served_verbatim(produced: dict[str, Path]) -> 
     on_disk = _read_json(bundle_dir / "analysis.json")
     served = _get_json(_client(bundle_dir), "/api/analysis")
 
-    # only the relative preview URLs may be added; nothing else is re-serialised
-    expected = copy.deepcopy(on_disk)
-    for key in ("before", "after", "change"):
-        expected["imagery"][key]["url"] = f"/api/imagery/{key}"
-    assert served == expected
+    # the only field the API may add is the declared preview URL; nothing else is
+    # re-serialised, rounded or invented
+    without_urls = copy.deepcopy(served)
+    for key in IMAGERY_KEYS:
+        assert "url" in without_urls["imagery"][key]
+        without_urls["imagery"][key].pop("url")
+    assert without_urls == on_disk
+
+    declared = _assert_declared_urls(served)
+    for key in IMAGERY_KEYS:
+        assert client_url_is_absolute(declared[key]["url"]) is False
 
     assert served["schema_version"] == 1
     assert served["method"]["threshold_db"] == THRESHOLD_DB
@@ -544,13 +582,13 @@ def test_imagery_serves_the_real_generated_pngs(produced: dict[str, Path]) -> No
     bundle_dir = produced["changed"]
     client = _client(bundle_dir)
     analysis = _get_json(client, "/api/analysis")
+    declared = _assert_declared_urls(analysis)
 
     sizes = set()
-    for key in ("before", "after", "change"):
+    for key in IMAGERY_KEYS:
         entry = analysis["imagery"][key]
-        assert entry["url"] == f"/api/imagery/{key}"
-        response = client.get(entry["url"])
-        assert response.status_code == 200
+        response = client.get(declared[key]["url"])
+        assert response.status_code == 200, f"{key}: GET {declared[key]['url']} -> {response.status_code}"
         assert response.headers["content-type"].startswith("image/png")
         on_disk = (bundle_dir / entry["path"]).read_bytes()
         assert response.content == on_disk, "the served preview must be the produced file byte for byte"
@@ -561,6 +599,9 @@ def test_imagery_serves_the_real_generated_pngs(produced: dict[str, Path]) -> No
         sizes.add(image.size)
 
     assert len(sizes) == 1, "all three previews must share one grid so they overlay exactly"
+    # the bounds a preview is declared with are the bounds it is served under
+    for key in IMAGERY_KEYS:
+        assert analysis["imagery"][key]["bounds"] == analysis["bbox"]
     assert client.get("/api/imagery/sideways").status_code == 404
 
 
@@ -570,7 +611,7 @@ def test_preview_bounds_equal_the_analysis_bbox(produced: dict[str, Path]) -> No
     bbox = analysis["bbox"]
     assert len(bbox) == 4 and bbox[0] < bbox[2] and bbox[1] < bbox[3]
 
-    for key in ("before", "after", "change"):
+    for key in IMAGERY_KEYS:
         bounds = analysis["imagery"][key]["bounds"]
         assert bounds == bbox, f"imagery.{key}.bounds must equal the analysis bbox exactly"
         assert analysis["imagery"][key]["label"].strip()
@@ -755,14 +796,15 @@ def test_inconsistent_metrics_are_refused_then_repaired(tmp_path: Path, produced
 def test_damaged_preview_is_refused_then_repaired(tmp_path: Path, produced: dict[str, Path]) -> None:
     bundle_dir = _bundle_copy(tmp_path, produced["changed"])
     client = _client(bundle_dir)
+    declared_url = _get_json(client, "/api/analysis")["imagery"]["change"]["url"]
     preview = bundle_dir / "change.png"
     original = preview.read_bytes()
 
     preview.write_bytes(b"not a png at all")
     status = _get_json(client, "/api/status")
     assert status["state"] == "error"
-    assert "analysis.imagery.change" in status["message"]
-    assert client.get("/api/imagery/change").status_code == 503
+    assert client.get(declared_url).status_code == 503
+    assert str(bundle_dir) not in status["message"] and str(preview) not in status["message"]
 
     preview.write_bytes(original)
     assert _get_json(client, "/api/status")["state"] == "ready"
@@ -784,11 +826,129 @@ def test_bundle_dir_symlink_is_refused(tmp_path: Path, produced: dict[str, Path]
     real = _bundle_copy(tmp_path / "real", produced["changed"])
     link = tmp_path / "current"
     link.symlink_to(real, target_is_directory=True)
-    status = _get_json(_client(link), "/api/status")
+    client = _client(link)
+    status = _get_json(client, "/api/status")
     assert status["state"] == "error"
-    # the message carries the sanitised contract label and nothing about the filesystem
-    assert status["message"].endswith("(bundle)")
-    assert str(real) not in status["message"] and str(tmp_path) not in status["message"]
+    assert client.get("/api/analysis").status_code == 503
+    # the message is a sanitised contract pointer: wording may evolve, but no
+    # filesystem location may ever appear in it
+    message = status["message"]
+    assert message.strip()
+    for leaked in (str(real), str(link), str(tmp_path), "/tmp/"):
+        assert leaked not in message
+
+
+def _republish_generation(bundle_dir: Path, workdir: Path, *, threshold_db: float) -> None:
+    """Run the producer again into an existing bundle directory: a new generation."""
+    workdir.mkdir(parents=True, exist_ok=True)
+    manifest = _write_manifest(
+        workdir / "manifest.json",
+        _write_raster(workdir / "before.tif", _stable_grid()),
+        _write_raster(workdir / "after.tif", _followup_grid()),
+    )
+    run_change_detection(manifest, str(bundle_dir), threshold_db, 0.0)
+
+
+# --------------------------------------------------------------------------- #
+# generation safety: a superseded preview is never served
+# --------------------------------------------------------------------------- #
+def test_superseded_generation_preview_is_refused(tmp_path: Path, produced: dict[str, Path]) -> None:
+    """A client holding the previous analysis id must not be served the new images."""
+    bundle_dir = _bundle_copy(tmp_path / "gen", produced["changed"])
+    client = _client(bundle_dir)
+    first = _get_json(client, "/api/analysis")
+    stale = _assert_declared_urls(first)
+    stale_bytes = {key: (bundle_dir / f"{key}.png").read_bytes() for key in IMAGERY_KEYS}
+
+    _republish_generation(bundle_dir, tmp_path / "work", threshold_db=THRESHOLD_DB + 0.5)
+
+    second = _get_json(client, "/api/analysis")
+    assert second["analysis_id"] != first["analysis_id"], "a new run must publish a new analysis id"
+    current = _assert_declared_urls(second)
+    fresh_bytes = {key: (bundle_dir / f"{key}.png").read_bytes() for key in IMAGERY_KEYS}
+    assert fresh_bytes["change"] != stale_bytes["change"], "the two generations must differ for this to test anything"
+
+    for key in IMAGERY_KEYS:
+        assert current[key]["url"] != stale[key]["url"]
+        response = client.get(stale[key]["url"])
+        assert response.status_code == 409, (
+            f"{key}: a superseded generation answered {response.status_code}, expected 409 Conflict"
+        )
+        assert response.content != fresh_bytes[key]
+        served_current = client.get(current[key]["url"])
+        assert served_current.status_code == 200
+        assert served_current.content == fresh_bytes[key], f"{key}: current generation must serve current bytes"
+
+
+def test_stale_analysis_json_is_never_paired_with_new_imagery(tmp_path: Path, produced: dict[str, Path]) -> None:
+    """Previews written ahead of their analysis document must not pass as the old run.
+
+    The producer publishes ``analysis.json`` last as its completion sentinel, so a
+    client holding the previous analysis id must keep seeing the previous images
+    (or be refused), never the new ones. The API is expected to move previews to a
+    per-generation root; this assertion holds either way and fails if new bytes are
+    ever served under a superseded analysis id.
+    """
+    bundle_dir = _bundle_copy(tmp_path / "gen", produced["changed"])
+    client = _client(bundle_dir)
+    first = _get_json(client, "/api/analysis")
+    declared = _assert_declared_urls(first)
+    original = {key: (bundle_dir / f"{key}.png").read_bytes() for key in IMAGERY_KEYS}
+
+    next_generation = _produce(
+        tmp_path / "next", "next", followup=_followup_grid(with_tiny=True), min_area_ha=0.0
+    )
+    replacement = {key: (next_generation / f"{key}.png").read_bytes() for key in IMAGERY_KEYS}
+    assert replacement["change"] != original["change"], "the two generations must differ for this to test anything"
+    for key in IMAGERY_KEYS:
+        (bundle_dir / f"{key}.png").write_bytes(replacement[key])
+
+    for key in IMAGERY_KEYS:
+        response = client.get(declared[key]["url"])
+        if response.status_code == 200:
+            assert response.content == original[key], (
+                f"{key}: new imagery was served under superseded analysis id "
+                f"{first['analysis_id']}; stale JSON must never be paired with new images"
+            )
+        else:
+            assert response.status_code in (404, 409, 503), f"{key}: unexpected status {response.status_code}"
+
+
+def test_escaping_or_absolute_imagery_path_is_refused(tmp_path: Path, produced: dict[str, Path]) -> None:
+    bundle_dir = _bundle_copy(tmp_path / "gen", produced["changed"])
+    client = _client(bundle_dir)
+    declared_url = _get_json(client, "/api/analysis")["imagery"]["before"]["url"]
+    original = json.loads((bundle_dir / "analysis.json").read_text(encoding="utf-8"))
+
+    for candidate in ("/etc/passwd", "../outside.png", "previews/before.png", "before.png/"):
+        tampered = copy.deepcopy(original)
+        tampered["imagery"]["before"]["path"] = candidate
+        (bundle_dir / "analysis.json").write_text(json.dumps(tampered, indent=2), encoding="utf-8")
+        status = _get_json(client, "/api/status")
+        assert status["state"] == "error", f"{candidate!r} must be refused"
+        assert client.get(declared_url).status_code == 503
+        message = status["message"]
+        assert candidate not in message and str(bundle_dir) not in message and str(tmp_path) not in message
+
+    (bundle_dir / "analysis.json").write_text(json.dumps(original, indent=2), encoding="utf-8")
+    assert _get_json(client, "/api/status")["state"] == "ready"
+    assert client.get(declared_url).status_code == 200
+
+
+def test_symlinked_preview_is_refused(tmp_path: Path, produced: dict[str, Path]) -> None:
+    bundle_dir = _bundle_copy(tmp_path / "gen", produced["changed"])
+    client = _client(bundle_dir)
+    declared_url = _get_json(client, "/api/analysis")["imagery"]["change"]["url"]
+    outside = tmp_path / "outside.png"
+    outside.write_bytes((bundle_dir / "change.png").read_bytes())
+    (bundle_dir / "change.png").unlink()
+    (bundle_dir / "change.png").symlink_to(outside)
+
+    status = _get_json(client, "/api/status")
+    assert status["state"] == "error"
+    assert client.get(declared_url).status_code == 503
+    message = status["message"]
+    assert str(outside) not in message and str(bundle_dir) not in message and str(tmp_path) not in message
 
 
 # --------------------------------------------------------------------------- #
@@ -804,7 +964,8 @@ def test_only_read_verbs_are_exposed(tmp_path: Path, produced: dict[str, Path]) 
     # the bundle directory is not mutated by serving it
     bundle_dir = produced["changed"]
     before = {item.name: (item.stat().st_mtime_ns, item.stat().st_size) for item in bundle_dir.iterdir()}
-    for url in ("/api/analysis", "/api/regions", "/api/imagery/before", "/api/imagery/after", "/api/imagery/change"):
+    declared = _assert_declared_urls(_get_json(client, "/api/analysis"))
+    for url in ("/api/analysis", "/api/regions", *(declared[key]["url"] for key in IMAGERY_KEYS)):
         assert client.get(url).status_code == 200
     after = {item.name: (item.stat().st_mtime_ns, item.stat().st_size) for item in bundle_dir.iterdir()}
     assert before == after

@@ -10,6 +10,7 @@ import pytest
 from click.testing import CliRunner
 
 from acquisition import cli as wrapper_cli
+from acquisition.integrity import IntegrityError
 from helpers import PINNED_REV, record_upstream_argv
 
 SENTINEL_USER = "pin.sentinel@example.invalid"
@@ -40,36 +41,57 @@ SEARCH_ARGS = [
 ]
 
 
+def _break_integrity(monkeypatch, detail: str, order=None):
+    def boom():
+        if order is not None:
+            order.append("integrity")
+        raise IntegrityError(detail)
+
+    monkeypatch.setattr(wrapper_cli, "verify_installation", boom)
+
+
 def test_require_pinned_revision_passes_for_the_pinned_install(upstream):
     assert wrapper_cli.require_pinned_revision() == PINNED_REV
 
 
 @pytest.mark.parametrize(
-    "reported", ["0000000000000000000000000000000000000000", "unknown (source tree has no .git)"]
+    "detail, expect",
+    [
+        (
+            "installed eodms-cli revision 0000000000000000000000000000000000000000 != pinned "
+            + PINNED_REV,
+            "0000000000000000000000000000000000000000",
+        ),
+        (
+            "the pinned source tree is not pristine (1 modified/untracked entry:  M eodms_cli.py)",
+            "not pristine",
+        ),
+        ("eodms/config.py fails its RECORD hash", "RECORD hash"),
+    ],
 )
-def test_require_pinned_revision_fails_closed(monkeypatch, reported):
-    monkeypatch.setattr(wrapper_cli, "_upstream_revision", lambda: reported)
+def test_require_pinned_revision_fails_closed(monkeypatch, detail, expect):
+    _break_integrity(monkeypatch, detail)
     with pytest.raises(Exception) as excinfo:
         wrapper_cli.require_pinned_revision()
-    assert PINNED_REV in str(excinfo.value)
-    assert "Refusing" in str(excinfo.value)
+    assert expect in str(excinfo.value)
+    assert "Refusing to import" in str(excinfo.value)
 
 
 def test_search_refuses_before_prompting_when_the_pin_is_wrong(monkeypatch, tmp_path):
     _boom_prompt(monkeypatch)
-    monkeypatch.setattr(wrapper_cli, "_upstream_revision", lambda: "deadbeef" * 5)
+    _break_integrity(monkeypatch, "eodms/config.py fails its RECORD hash")
     recorded = record_upstream_argv(monkeypatch)
     result = CliRunner().invoke(wrapper_cli.main, [*SEARCH_ARGS, "--output", str(tmp_path / "r.geojson")])
     assert result.exit_code != 0
-    assert PINNED_REV in result.output
-    assert recorded == [], "upstream must not be invoked when the pin check fails"
+    assert "RECORD hash" in result.output
+    assert recorded == [], "upstream must not be invoked when the integrity check fails"
 
 
 def test_download_refuses_before_prompting_when_the_pin_is_wrong(
     monkeypatch, tmp_path, fake_aaa
 ):
     _boom_prompt(monkeypatch)
-    monkeypatch.setattr(wrapper_cli, "_upstream_revision", lambda: "deadbeef" * 5)
+    _break_integrity(monkeypatch, "the pinned source tree is not pristine (1 untracked file)")
     scenes = tmp_path / "selected-scenes.geojson"
     scenes.write_text('{"type": "FeatureCollection", "features": [{"id": "a"}]}')
     recorded = record_upstream_argv(monkeypatch)
@@ -77,23 +99,28 @@ def test_download_refuses_before_prompting_when_the_pin_is_wrong(
         wrapper_cli.main, ["download", "--scenes", str(scenes)]
     )
     assert result.exit_code != 0
-    assert PINNED_REV in result.output
+    assert "not pristine" in result.output
     assert recorded == []
 
 
-def test_anonymous_search_also_enforces_the_pin(monkeypatch, tmp_path):
+def test_anonymous_search_also_enforces_the_integrity_gate(monkeypatch, tmp_path):
     _boom_prompt(monkeypatch)
-    monkeypatch.setattr(wrapper_cli, "_upstream_revision", lambda: "deadbeef" * 5)
+    _break_integrity(monkeypatch, "injected_module.py is untracked")
     result = CliRunner().invoke(
         wrapper_cli.main, [*SEARCH_ARGS, "--output", str(tmp_path / "r.geojson"), "--anonymous"]
     )
     assert result.exit_code != 0
-    assert PINNED_REV in result.output
+    assert "injected_module.py" in result.output
 
 
 def test_pin_check_runs_before_the_prompt_on_a_good_pin(monkeypatch, tmp_path, fake_aaa):
     order: list[str] = []
-    monkeypatch.setattr(wrapper_cli, "_upstream_revision", lambda: PINNED_REV)
+    monkeypatch.setattr(
+        wrapper_cli,
+        "verify_installation",
+        lambda: (order.append("integrity") or {"revision": PINNED_REV, "packages_verified": 1}),
+    )
+
     def username_prompt(*args, **kwargs):
         order.append("username-prompt")
         return SENTINEL_USER
@@ -104,17 +131,15 @@ def test_pin_check_runs_before_the_prompt_on_a_good_pin(monkeypatch, tmp_path, f
 
     monkeypatch.setattr(wrapper_cli, "prompt_username", username_prompt)
     monkeypatch.setattr(wrapper_cli, "prompt_password", password_prompt)
-    monkeypatch.setattr(
-        wrapper_cli,
-        "_upstream_revision",
-        lambda: (order.append("pin-check") or PINNED_REV),
-    )
     record_upstream_argv(monkeypatch)
     result = CliRunner().invoke(
         wrapper_cli.main, [*SEARCH_ARGS, "--output", str(tmp_path / "r.geojson")]
     )
     assert result.exit_code == 0, result.output
-    assert order == ["pin-check", "username-prompt", "password-prompt"]
+    assert "integrity" in order, order
+    assert order.index("integrity") == 0, "integrity must be checked first"
+    assert "username-prompt" in order and "password-prompt" in order, order
+    assert order.index("integrity") < order.index("username-prompt")
 
 
 # --------------------------------------------------------------------------

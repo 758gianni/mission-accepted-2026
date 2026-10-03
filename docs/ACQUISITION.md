@@ -98,6 +98,8 @@ Complete audit of home-derived paths in `eodms-cli@464b949…` plus the pinned
 | a drifted/tampered source tree receiving a password | — | every `search`/`download` re-checks the installed revision against the pin **before any prompt** (`require_pinned_revision`) and fails closed; `doctor` is not the only gate |
 | injected defaults surviving into a later run | — | the Click parameter defaults are restored in a `finally`, so a subsequent `--anonymous` invocation in the same process cannot inherit a previous password |
 | `download --uuid a,b` treated as one bogus UUID | `eodms_cli.py:3129` | upstream `--uuid` is a single, non-multiple option that never splits on commas; the wrapper splits/dedupes and issues **one upstream invocation per UUID** |
+| `standalone_mode=True` raising `SystemExit(0)` after the first successful invocation, silently truncating a multi-UUID download | Click semantics | `_run_upstream` catches `SystemExit` per invocation: code `0`/`None` continues the loop, any non-zero code and any `ClickException`/error still aborts and propagates (message redacted) |
+| an ineffective `--limit` silently downloading an unbounded selection | upstream maps `--limit` to the RAPI `maxOrders` field and ignores it for `--uuid`/`--input` | the wrapper enforces its own bound: `--limit` must be an integer in `1..5000`, the number of **products** selected must be within it (else it fails with the required value), and AOI/footprint features in a scenes file (`role` in `aoi`/`extent`/`footprint`/...) are excluded from the product count |
 
 Nothing else in the pinned dependencies touches the home directory:
 `eodms/config.py` holds service URLs only, `eodms_rapi` writes exclusively to
@@ -134,6 +136,11 @@ call.
 
 ## 5. Tests
 
+The bootstrap also writes `.tools/eodms-cli/install-manifest.json` (pins plus a
+`RECORD` digest for every installed distribution) and runs
+`python -m acquisition.integrity`, which re-verifies source and dependency
+integrity. The same check gates every `search`/`download`.
+
 The bootstrap installs the wrapper's pinned dev requirements
 (`requirements-acquisition.txt`: `click==8.1.8`, `pytest==8.3.4`) into
 `.tools/eodms-cli/.venv`, so the documented command works immediately after a
@@ -144,14 +151,17 @@ bash acquisition/bootstrap_eodms_cli.sh        # once
 .tools/eodms-cli/.venv/bin/python -m pytest tests/acquisition -q
 ```
 
-72 tests in five files:
+98 tests in seven files:
 
 | File | What it proves |
 | --- | --- |
 | `test_boundary_real_aaa.py` | **Boundary evidence.** Runs the *real* `eodms_cli.make_aaa` -> `eodms.aaa.AAA_API` and the *real* `resolve_credentials`/`ConfigUtils` path with every socket operation blocked, so the client is genuinely built and the network boundary is genuinely reached with no traffic. Asserts the real `auth_folder`, `aaa_creds.cred_fn` and token-lock path are all task-scoped; that a decoy `~/.eodms/config.ini` planted in the real home is never read (the prompted credentials are what reach the client) and is byte-identical afterwards; that the real home tree is unchanged; and that no sentinel secret (plaintext or base64) appears in output, exceptions or any file. |
 | `test_pin_and_credential_lifecycle.py` | The pin check fails closed **before** any prompt (the prompt functions raise if called) for `search`, `download` and `--anonymous`; and injected Click credential defaults are restored in `finally`, including across the per-UUID download loop, so a later anonymous run starts from `username=None, password=None`. |
 | `test_credentials.py` | Prompt behaviour, argv/file/log leak scans with sentinel credentials, forbidden `configure`, memory-only AAA state, disabled file logging, untouched environment and untouched real `~/.eodms`, argument validation, exit-code propagation. |
-| `test_bootstrap.py` | Pinned revision, bootstrap invariants, the `.tools` ignore rule, credential-free help check. |
+| `test_integrity.py` | Reproduces the tampering scenarios and proves fail-closed behaviour with no prompt and no import: a **modified tracked source file with HEAD unchanged**, an **untracked module injected** into the source tree, an **installed dependency file edited in place** (fails its pip `RECORD` hash), a manifest with the wrong pin, and a missing manifest. Also asserts the ordering integrity → import → prompt, and that the manifest is deterministic. |
+| `test_multi_uuid_click.py` | Real `click.Group.main` semantics: a genuine Click command installed as the pinned group's `download` shows that `SystemExit(0)` per invocation does not abort the loop (uuid `a,b` → two invocations, comma and repeated forms, dedupe), that a failing item **stops** the loop and propagates a non-zero exit, and that a single UUID still yields one invocation. |
+| `test_redaction.py` | Simulated signed-URL token sentinels through the genuine `requests` transport boundary (`HTTPAdapter.send` raises `HTTPError` carrying `?access_token=...`), with sockets still blocked: the sentinel is absent from stdout, stderr, the exception text and every log record; live tokens embedded in a URL **path** are scrubbed via the secret registry; and a `downloads.jsonl` manifest written during an invocation comes back redacted. |
+| `test_bootstrap.py` | Pinned revision, bootstrap invariants, the `.tools` ignore rule, credential-free help and integrity checks. |
 | `test_scenes.py` | Scene-selection parsing and upstream argument mapping, including the single-UUID-per-invocation rule. |
 
 The boundary tests in `test_boundary_real_aaa.py` are the security evidence and

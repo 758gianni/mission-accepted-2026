@@ -20,10 +20,17 @@ Credential policy enforced here:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 __all__ = [
     "EODMS_CLI_REPO",
     "EODMS_CLI_REV",
+    "EODMS_PY_REPO",
+    "EODMS_PY_REV",
     "FORBIDDEN_UPSTREAM_COMMANDS",
+    "RAPI_REPO",
+    "RAPI_REV",
+    "REPO_ROOT",
     "TOOLS_DIR",
     "UPSTREAM_SRC_DIR",
     "VENV_DIR",
@@ -38,6 +45,14 @@ EODMS_CLI_REV = "464b94920e7faf28c84a6d31229ef0b2828a1479"
 #: Upstream commands the wrapper must never expose (credential persistence).
 FORBIDDEN_UPSTREAM_COMMANDS = ("configure",)
 
+REPO_ROOT = str(Path(__file__).resolve().parents[1])
+
+#: Transitive EODMS API clients, pinned so the install is reproducible.
+EODMS_PY_REPO = "https://github.com/eodms-sgdot/eodms-py.git"
+EODMS_PY_REV = "ec373705727dd50a3e80d092356f43e5c5f0e075"
+RAPI_REPO = "https://github.com/eodms-sgdot/py-eodms-rapi.git"
+RAPI_REV = "22aa6348a120da98c1122057a245a1ba3100b759"
+
 TOOLS_DIR = ".tools/eodms-cli"
 UPSTREAM_SRC_DIR = ".tools/eodms-cli/src"
 VENV_DIR = ".tools/eodms-cli/.venv"
@@ -46,3 +61,6 @@ VENV_DIR = ".tools/eodms-cli/.venv"
 DEFAULT_COLLECTION = "Radarsat-2_Tropical_Forest_Products"
 DEFAULT_SCENES_FILE = "data/interim/selected-scenes.geojson"
 DEFAULT_RAW_DIR = "data/raw"
+
+#: Default strict bound on how many products one invocation may select/download.
+DEFAULT_ITEM_BOUND = 100

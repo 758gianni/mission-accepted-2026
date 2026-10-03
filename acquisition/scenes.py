@@ -14,6 +14,33 @@ from typing import Any, Iterable
 
 _ID_KEYS = ("id", "uuid", "item_uuid", "itemUuid", "orderId", "order_id")
 
+#: Feature roles that mark a geometry as the area of interest / footprint rather
+#: than a product. Such features are never downloaded as scenes: a scenes file
+#: that also carries the AOI geometry must not turn the AOI into a product.
+AOI_ROLE_KEYS = ("role", "feature_role", "type", "purpose", "kind")
+AOI_ROLE_VALUES = frozenset(
+    {
+        "aoi",
+        "aoi_boundary",
+        "aoi-boundary",
+        "area_of_interest",
+        "area-of-interest",
+        "extent",
+        "boundingbox",
+        "bounding_box",
+        "bbox",
+        "footprint",
+        "outline",
+        "mask",
+        "geometry",
+    }
+)
+
+#: Upstream ``download --limit`` is only an order-count hint (it maps to the RAPI
+#: ``maxOrders`` field) and is ignored entirely for ``--uuid``/``--input``, so the
+#: wrapper enforces its own bound on the number of selected items.
+MAX_SELECTED_ITEMS = 5000
+
 BBOX_HELP = "Bounding box as west,south,east,north"
 DATETIME_HELP = 'ISO 8601 instant or range, e.g. "2024-01-01/2024-12-31"'
 
@@ -65,8 +92,49 @@ def _dedupe(values: Iterable[str]) -> list[str]:
     return ordered
 
 
+def is_aoi_feature(entry: dict[str, Any]) -> bool:
+    """True when a feature describes the AOI rather than a product to download."""
+    properties = entry.get("properties")
+    sources = [entry, properties] if isinstance(properties, dict) else [entry]
+    for source in sources:
+        for key in AOI_ROLE_KEYS:
+            value = source.get(key)
+            if isinstance(value, str) and value.strip().lower() in AOI_ROLE_VALUES:
+                return True
+    return False
+
+
+def validate_limit(limit: Any, *, option: str = "--limit") -> int:
+    """Validate a strictly positive item bound."""
+    try:
+        value = int(limit)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{option} must be an integer") from exc
+    if value <= 0:
+        raise ValueError(f"{option} must be greater than zero (got {value})")
+    if value > MAX_SELECTED_ITEMS:
+        raise ValueError(
+            f"{option} must not exceed {MAX_SELECTED_ITEMS} (got {value}); "
+            "raise the bound explicitly if that is intended"
+        )
+    return value
+
+
+def enforce_selected_item_bound(uuids: list[str], limit: Any, *, option: str = "--limit") -> int:
+    """Bound the number of items actually selected for one invocation."""
+    bound = validate_limit(limit, option=option)
+    if not uuids:
+        raise ValueError("no products selected: nothing to download")
+    if len(uuids) > bound:
+        raise ValueError(
+            f"{len(uuids)} products selected but the bound is {bound}: "
+            f"re-run with {option} {len(uuids)} or narrow the selection"
+        )
+    return bound
+
+
 def load_scenes(path: str | Path) -> list[str]:
-    """Read UUIDs from a selection file (``.geojson``/``.json``/``.jsonl``)."""
+    """Read product UUIDs from a selection file, excluding AOI features."""
     path = Path(path)
     text = path.read_text(encoding="utf-8")
     stripped = text.strip()
@@ -85,10 +153,37 @@ def load_scenes(path: str | Path) -> list[str]:
             except json.JSONDecodeError as exc:
                 raise ValueError(f"Invalid JSONL in {path}: {exc}") from exc
         payload = entries
-    uuids = extract_uuids(payload)
+    uuids, excluded = extract_products(payload)
     if not uuids:
-        raise ValueError(f"No selected scenes found in {path}")
+        raise ValueError(
+            f"No selected scenes found in {path}"
+            + (f" ({excluded} AOI feature(s) excluded)" if excluded else "")
+        )
     return uuids
+
+
+def extract_products(payload: Any) -> tuple[list[str], int]:
+    """Return ``(product uuids, excluded AOI feature count)``."""
+    entries: list[dict[str, Any]] = []
+    if isinstance(payload, dict):
+        for container_key in ("features", "items"):
+            container = payload.get(container_key)
+            if isinstance(container, list):
+                entries = [e for e in container if isinstance(e, dict)]
+                break
+        else:
+            entries = [payload]
+    elif isinstance(payload, list):
+        entries = [e for e in payload if isinstance(e, dict)]
+
+    uuids: list[str] = []
+    excluded = 0
+    for entry in entries:
+        if is_aoi_feature(entry):
+            excluded += 1
+            continue
+        uuids.extend(_ids_from_mapping(entry))
+    return _dedupe(uuids), excluded
 
 
 def validate_bbox(value: str) -> str:

@@ -130,6 +130,10 @@ def _neutralise_aaa_token_persistence(_patch) -> None:
     from eodms.aaa import AAA_Creds
 
     def _memory_only_export(self):  # noqa: ANN001
+        # Tokens stay in memory; register them so they cannot leak into output.
+        from .redaction import register_secrets
+
+        register_secrets(getattr(self, "access_token", None), getattr(self, "refresh_token", None))
         return None
 
     def _memory_only_import(self):  # noqa: ANN001

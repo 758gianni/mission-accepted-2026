@@ -25,6 +25,7 @@ import click
 
 from . import (
     DEFAULT_COLLECTION,
+    DEFAULT_ITEM_BOUND,
     DEFAULT_RAW_DIR,
     DEFAULT_SCENES_FILE,
     EODMS_CLI_REPO,
@@ -35,6 +36,8 @@ from . import (
     __version__,
 )
 from . import scenes as scenes_mod
+from .integrity import IntegrityError, verify_installation
+from .redaction import redaction_scope, redact_text, register_secrets
 from .credentials import (
     CredentialError,
     obtain_credentials,
@@ -97,19 +100,22 @@ def _reject_credential_options(args: Sequence[str]) -> None:
 
 
 def require_pinned_revision() -> str:
-    """Fail closed unless the installed CLI source is exactly the pinned revision.
+    """Fail closed unless the install provably matches the audited pins.
 
-    Runs on every ``search``/``download`` **before** any credential prompt, so a
-    drifted or tampered source tree can never receive a password.
+    Runs on every ``search``/``download`` **before** the upstream module is
+    imported and before any credential prompt. Unlike a bare ``git rev-parse``,
+    this also rejects a modified/staged/deleted/untracked source file (the HEAD
+    commit is unchanged in that case) and any installed dependency whose version
+    or pip ``RECORD`` hash differs from the bootstrap manifest.
     """
-    revision = _upstream_revision()
-    if revision != EODMS_CLI_REV:
+    try:
+        summary = verify_installation()
+    except IntegrityError as exc:
         raise CredentialError(
-            f"Installed EODMS CLI revision {revision!r} != pinned {EODMS_CLI_REV}. "
-            "Refusing to prompt for credentials or contact EODMS with an unverified "
-            "CLI. Re-run: bash acquisition/bootstrap_eodms_cli.sh"
-        )
-    return revision
+            f"{redact_text(exc)}\nRefusing to import unaudited code, prompt for "
+            "credentials, or contact EODMS. Re-run: bash acquisition/bootstrap_eodms_cli.sh"
+        ) from exc
+    return summary["revision"]
 
 
 def _apply_credential_defaults(command: Any, username: str | None, password: str | None):
@@ -144,12 +150,13 @@ def _run_upstream(
     needs_credentials: bool = True,
     username_prompt=None,
     password_prompt=None,
+    download_dir: str | None = None,
 ) -> None:
     argvs: list[list[str]] = (
         [list(argv)] if argv and isinstance(argv[0], str) else [list(a) for a in argv]  # type: ignore[index]
     )
-    # Pin check first: a drifted source tree must never be prompted for, let alone
-    # sent credentials.
+    # Integrity first: a drifted, modified or tampered tree must never be
+    # imported, prompted for, or contacted.
     require_pinned_revision()
     upstream = load_upstream()
     username, password = obtain_credentials(
@@ -158,7 +165,10 @@ def _run_upstream(
         username_prompt=username_prompt,
         password_prompt=password_prompt,
     )
-    with isolated_eodms_environment(upstream):
+    # The live password is scrubbed from output/logs/manifests wherever it lands.
+    if password:
+        register_secrets(password)
+    with isolated_eodms_environment(upstream), redaction_scope(download_dir):
         for single_argv in argvs:
             command = upstream.cli.commands.get(single_argv[0])
             if command is None:
@@ -168,11 +178,21 @@ def _run_upstream(
                 )
             restore_defaults = _apply_credential_defaults(command, username, password)
             try:
+                # Real Click semantics: in standalone mode a successful command
+                # raises SystemExit(0), which must NOT abort a multi-item loop.
+                # Non-zero exits and errors are propagated untouched.
                 upstream.cli.main(
                     args=single_argv,
                     prog_name="eodms-cli (pinned, invoked by acquisition)",
                     standalone_mode=True,
                 )
+            except SystemExit as exc:
+                if exc.code not in (0, None):
+                    raise
+            except click.ClickException as exc:
+                raise click.ClickException(redact_text(exc.format_message())) from None
+            except Exception as exc:
+                raise click.ClickException(redact_text(f"{type(exc).__name__}: {exc}")) from None
             finally:
                 restore_defaults()
 
@@ -184,6 +204,12 @@ def _run_upstream(
 
 class _GuardedGroup(click.Group):
     """Group that vets the *remaining* tokens before the subcommand runs."""
+
+    def invoke(self, ctx):
+        # Outermost redaction scope: covers the wrapper's own error rendering and
+        # anything logged while the invocation unwinds, not just the upstream call.
+        with redaction_scope():
+            return super().invoke(ctx)
 
     def parse_args(self, ctx, args):
         rest = super().parse_args(ctx, args)
@@ -272,7 +298,7 @@ def doctor() -> None:
 @click.option("--filter", "-f", "filter_text", default=None,
               help="CQL2 text filter passed through to the upstream CLI.")
 @click.option("--limit", "-l", type=int, default=None,
-              help="Max items (upstream default: 1000).")
+              help="Positive upper bound on returned items (validated by the wrapper).")
 @click.option("--output", "-o", default=None,
               help="Write results to this GeoJSON file.")
 @click.option("--env", "-e", "environment", default="prod", show_default=True)
@@ -299,6 +325,11 @@ def search_cmd(ctx: click.Context, collection: str, aoi: str | None, bbox: str |
             datetime_range = scenes_mod.validate_datetime(datetime_range)
         except ValueError as exc:
             raise CredentialError(f"Invalid --datetime: {exc}") from exc
+    if limit is not None:
+        try:
+            scenes_mod.validate_limit(limit)
+        except ValueError as exc:
+            raise CredentialError(str(exc)) from exc
     if output is not None and not str(output).strip():
         raise CredentialError("--output must not be empty.")
 
@@ -331,7 +362,9 @@ def search_cmd(ctx: click.Context, collection: str, aoi: str | None, bbox: str |
               help="Item UUID(s); repeat or comma-separate. Mutually exclusive with --scenes.")
 @click.option("--output-dir", default=DEFAULT_RAW_DIR, show_default=True,
               help="Destination directory for raw scenes.")
-@click.option("--limit", "-l", type=int, default=100, show_default=True)
+@click.option("--limit", "-l", type=int, default=DEFAULT_ITEM_BOUND, show_default=True,
+              help="Strict upper bound on the number of products downloaded. Upstream "
+                   "ignores --limit for --uuid/--input, so the wrapper enforces it.")
 @click.option("--env", "-e", "environment", default="prod", show_default=True)
 @click.pass_context
 def download_cmd(ctx: click.Context, collection: str, scenes: str | None,
@@ -354,11 +387,16 @@ def download_cmd(ctx: click.Context, collection: str, scenes: str | None,
                 "--uuid <item-uuid>."
             )
         try:
-            scenes_mod.load_scenes(scenes_path)
+            uuid_list = scenes_mod.load_scenes(scenes_path)
         except ValueError as exc:
             raise CredentialError(str(exc)) from exc
     if not str(output_dir).strip():
         raise CredentialError("--output-dir must not be empty.")
+
+    try:
+        scenes_mod.enforce_selected_item_bound(uuid_list, limit)
+    except ValueError as exc:
+        raise CredentialError(str(exc)) from exc
 
     argvs = scenes_mod.download_argvs(
         collection=collection.strip(),
@@ -374,6 +412,7 @@ def download_cmd(ctx: click.Context, collection: str, scenes: str | None,
         needs_credentials=True,
         username_prompt=lambda: ctx.obj["username_prompt"](),
         password_prompt=lambda: ctx.obj["password_prompt"](),
+        download_dir=output_dir,
     )
 
 

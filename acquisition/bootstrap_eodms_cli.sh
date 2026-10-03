@@ -63,6 +63,14 @@ log "installing dependencies (this may take a few minutes on first run)"
 # a bootstrap. Pinned in requirements-acquisition.txt.
 "${PY}" -m pip install --quiet --requirement "${REPO_ROOT}/requirements-acquisition.txt"
 
+# Integrity manifest: pins plus a pip RECORD digest for every installed
+# distribution. acquisition/integrity.py re-verifies source and dependency
+# integrity before the CLI is imported or any credential is requested.
+log "writing the integrity manifest"
+PYTHONPATH="${REPO_ROOT}" "${PY}" -W ignore -m acquisition.integrity --write-manifest
+log "credential-free integrity check"
+PYTHONPATH="${REPO_ROOT}" "${PY}" -W ignore -m acquisition.integrity
+
 # Credential-free smoke check: import the pinned CLI and render its help inside
 # the wrapper sandbox, which redirects every home-derived lookup to a task-scoped
 # temp dir. No EODMS login, no network, no ~/.eodms read, no log file written,

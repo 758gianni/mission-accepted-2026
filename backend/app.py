@@ -15,6 +15,7 @@ from __future__ import annotations
 import copy
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, Request, Response
 from fastapi.responses import JSONResponse
@@ -157,8 +158,13 @@ def create_app(
         if guard is not None:
             return guard
         document = copy.deepcopy(current.bundle.analysis)  # type: ignore[union-attr]
+        analysis_id = str(document["analysis_id"])
         for key in IMAGERY_KEYS:
-            document["imagery"][key]["url"] = f"/api/imagery/{key}"
+            # The query pins the generation a frontend saw, so a later request
+            # cannot silently return a different analysis' pixels.
+            document["imagery"][key]["url"] = (
+                f"/api/imagery/{key}?analysis_id={quote(analysis_id, safe='')}"
+            )
         return JSONResponse(document)
 
     @app.get(
@@ -206,14 +212,40 @@ def create_app(
                 "description": "PNG preview declared by the analysis document.",
             },
             404: {"model": ErrorResponse, "description": "No result bundle, or no such imagery key."},
+            409: {
+                "model": ErrorResponse,
+                "description": "The supplied analysis_id is not the published analysis.",
+            },
             503: {"model": ErrorResponse, "description": "The result bundle does not satisfy the contract."},
         },
         summary="PNG preview declared by the analysis document",
+        description=(
+            "Serves the preview bytes from the generation this snapshot pinned. "
+            "Pass the analysis_id from /api/analysis to be sure of getting the "
+            "pixels belonging to it; if it is no longer published the answer is "
+            "409 rather than a different analysis' imagery."
+        ),
     )
-    def imagery(key: str, current: BundleSnapshot = Depends(snapshot)) -> Response:
+    def imagery(
+        key: str,
+        analysis_id: str | None = None,
+        current: BundleSnapshot = Depends(snapshot),
+    ) -> Response:
         guard = _guard(current)
         if guard is not None:
             return guard
+        if analysis_id is not None and analysis_id != current.analysis_id:
+            # The frontend is holding an older analysis; refuse rather than hand
+            # it pixels from a generation it never saw.
+            return JSONResponse(
+                {
+                    "detail": (
+                        f"Analysis '{_safe_id(analysis_id)}' is no longer the published "
+                        "analysis. Reload /api/analysis and use the image URLs it returns."
+                    )
+                },
+                status_code=409,
+            )
         if key not in IMAGERY_KEYS:
             return JSONResponse(
                 {
@@ -224,10 +256,10 @@ def create_app(
                 status_code=404,
             )
         entry = current.bundle.imagery[key]  # type: ignore[union-attr]
-        # Re-validate containment and file type on every read so that a file
-        # swapped for a symlink after validation cannot be served.
+        # Read from the generation pinned when this snapshot was taken, never
+        # by rediscovering the pointer, so a swap mid-request cannot mix them.
         try:
-            data = _read_png(store.bundle_dir, entry.filename)
+            data = _read_png(current.generation_dir, entry.filename)
         except OSError:
             return JSONResponse(
                 {"detail": "The declared image preview is no longer readable."}, status_code=503

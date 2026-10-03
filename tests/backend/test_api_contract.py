@@ -78,7 +78,8 @@ def test_analysis_shape_and_imagery_urls(client: TestClient) -> None:
     assert set(body["imagery"]) == ALLOWED_KEYS
     for key, entry in body["imagery"].items():
         assert set(entry) == {"path", "bounds", "label", "url"}
-        assert entry["url"] == f"/api/imagery/{key}"
+        assert entry["url"].startswith(f"/api/imagery/{key}?")
+        assert "analysis_id=synthetic-analysis-0001" in entry["url"]
     assert body["method"]["change_definition"] == "10*log10(after/before)"
     assert body["metrics"]["scene_count"] == 2
     assert body["limitations"]
@@ -343,7 +344,10 @@ def test_bundle_json_is_served_verbatim_without_invention(client: TestClient) ->
     body = client.get("/api/analysis").json()
     original = analysis_document()
     original["imagery"] = {
-        key: {**value, "url": f"/api/imagery/{key}"}
+        key: {
+            **value,
+            "url": f"/api/imagery/{key}?analysis_id=synthetic-analysis-0001",
+        }
         for key, value in original["imagery"].items()
     }
     assert body == original

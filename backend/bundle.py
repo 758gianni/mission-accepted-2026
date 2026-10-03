@@ -16,11 +16,14 @@ apart:
 from __future__ import annotations
 
 import json
+import os
+import stat as stat_module
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from .generation import GenerationRejected, ResolvedRoot, resolve_bundle_root
 from .validation import (
     ANALYSIS_FILENAME,
     REGIONS_FILENAME,
@@ -42,13 +45,20 @@ ERROR_MESSAGE = (
 
 @dataclass(frozen=True)
 class BundleSnapshot:
-    """Immutable view of the bundle at one point in time."""
+    """Immutable view of the bundle at one point in time.
+
+    ``generation_dir`` is pinned when the snapshot was built and is the only
+    directory any file for this snapshot is read from, so a pointer swap part
+    way through a load can never pair one generation's metadata with another's
+    pixels.
+    """
 
     state: BundleState
     message: str
     analysis_id: str | None = None
     scene_count: int = 0
     bundle: ValidatedBundle | None = None
+    generation_dir: Path | None = None
 
     @property
     def is_ready(self) -> bool:
@@ -102,25 +112,29 @@ def load_bundle(bundle_dir: Path) -> BundleSnapshot:
     except BundleValidationError as error:
         detail = f" ({error.label})" if error.label else ""
         return BundleSnapshot(state="error", message=f"{ERROR_MESSAGE}{detail}")
+    except GenerationRejected as error:
+        return BundleSnapshot(
+            state="error",
+            message=f"{ERROR_MESSAGE} ({error.reason})",
+        )
 
 
 def _load(bundle_dir: Path) -> BundleSnapshot:
-    if bundle_dir.is_symlink():
-        raise BundleValidationError("bundle", "bundle directory must not be a symbolic link")
-    if not bundle_dir.exists():
+    resolved: ResolvedRoot | None = resolve_bundle_root(bundle_dir)
+    if resolved is None:
         return BundleSnapshot(state="awaiting_analysis", message=AWAITING_MESSAGE)
-    if not bundle_dir.is_dir():
-        raise BundleValidationError("bundle", "bundle path is not a directory")
 
-    analysis_path = bundle_dir / ANALYSIS_FILENAME
-    regions_path = bundle_dir / REGIONS_FILENAME
+    # Pinned once. Everything below reads from this one directory.
+    root = resolved.path
+    analysis_path = root / ANALYSIS_FILENAME
+    regions_path = root / REGIONS_FILENAME
     if not analysis_path.exists() and not regions_path.exists():
         # The directory exists but nothing has been published into it yet.
         return BundleSnapshot(state="awaiting_analysis", message=AWAITING_MESSAGE)
 
     analysis_document = _read_json(analysis_path, ANALYSIS_FILENAME)
     regions_document = _read_json(regions_path, REGIONS_FILENAME)
-    validated = build_validated_bundle(analysis_document, regions_document, bundle_dir)
+    validated = build_validated_bundle(analysis_document, regions_document, root)
 
     return BundleSnapshot(
         state="ready",
@@ -128,6 +142,7 @@ def _load(bundle_dir: Path) -> BundleSnapshot:
         analysis_id=str(validated.analysis["analysis_id"]),
         scene_count=validated.scene_count,
         bundle=validated,
+        generation_dir=root,
     )
 
 
@@ -151,29 +166,62 @@ class BundleStore:
         return self._bundle_dir
 
     def _current_signature(self) -> tuple[Any, ...]:
+        """Identify the bundle by the pointer and by what the pointer resolves to.
+
+        A pointer swap is a new symlink inode, and the resolved generation is a
+        different directory, so both an A->B flip and a B->A flip back are
+        noticed even when the names are reused.
+        """
         directory = self._bundle_dir
         try:
-            dir_stat = directory.lstat()
+            root_stat = directory.lstat()
+        except FileNotFoundError:
+            return (str(directory), "absent")
+        except OSError:
+            return (str(directory), "unreadable")
+
+        parts: tuple[Any, ...] = (
+            "root",
+            root_stat.st_mode,
+            root_stat.st_ino,
+            root_stat.st_mtime_ns,
+        )
+        if stat_module.S_ISLNK(root_stat.st_mode):
+            try:
+                parts = parts + ("pointer", os.readlink(directory))
+            except OSError:
+                return parts + ("pointer-unreadable",)
+
+        try:
+            resolved = resolve_bundle_root(directory)
+        except GenerationRejected:
+            resolved = None
+        if resolved is None:
+            return parts + ("unresolved",)
+
+        root = resolved.path
+        try:
             entries: list[tuple[Any, ...]] = []
-            for entry in sorted(directory.iterdir(), key=lambda item: item.name):
+            for entry in sorted(root.iterdir(), key=lambda item: item.name):
                 try:
                     entry_stat = entry.lstat()
                 except OSError:
                     entries.append((entry.name, "unreadable"))
                     continue
                 entries.append(
-                    (entry.name, entry_stat.st_mtime_ns, entry_stat.st_size, entry_stat.st_ino)
+                    (entry.name, entry_stat.st_mtime_ns, entry_stat.st_size,
+                     entry_stat.st_ino, entry_stat.st_mode)
                 )
-            directory_signature: tuple[Any, ...] = (
-                "present",
-                dir_stat.st_mtime_ns,
-                tuple(entries),
-            )
-        except FileNotFoundError:
-            directory_signature = ("absent",)
+            root_stat = root.lstat()
         except OSError:
-            directory_signature = ("unreadable",)
-        return (str(directory), directory_signature)
+            return parts + ("gone",)
+        return parts + (
+            "resolved",
+            root.name,
+            root_stat.st_ino,
+            root_stat.st_mtime_ns,
+            tuple(entries),
+        )
 
     def snapshot(self, *, force: bool = False) -> BundleSnapshot:
         signature = self._current_signature()

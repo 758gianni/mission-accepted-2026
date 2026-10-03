@@ -62,6 +62,51 @@ preflight from a disallowed origin gets no allow header and no `204`.
 `404` means "not produced yet"; `503` means "produced but broken". The service
 never substitutes defaults, zero values or estimates for missing data.
 
+### Published behind a generation pointer
+
+The producer publishes a bundle by renaming a finished generation directory into
+place and then swapping a **single relative symlink** at the configured root, so
+a reader sees either the old generation or the new one and never a
+half-replaced bundle. That is supported, but only for that exact shape and only
+for the configured root:
+
+- the configured root itself may be that pointer;
+- its target must be a **relative single basename** — no separators, no `..`,
+  not absolute — so it cannot address anything outside the resolved parent;
+- the target must match the producer's pattern `.<root name>.gen-<suffix>`,
+  optionally with a `-<pid>` suffix;
+- the target must itself be a **real directory**, not a symlink, so a chained or
+  nested pointer cannot be walked further.
+
+Everything else is refused as a controlled `error` / `503`: arbitrary external
+targets, absolute links, links escaping the parent, dangling pointers, links
+whose target is itself a symlink, and links whose name does not match the
+generation pattern. An ordinary direct bundle directory is unaffected and is
+never followed. This is not a general "follow symlinks" permission: no
+symlink is ever honoured anywhere except this one pointer, and the imagery
+symlink protections described below are unchanged.
+
+**One generation per snapshot.** The pointer is resolved exactly once per load.
+`analysis.json`, `regions.geojson` and all three previews are then read from
+that pinned directory, and imagery requests read from the generation their
+snapshot pinned — the pointer is never rediscovered while serving. A swap part
+way through a load therefore cannot pair one generation's metadata with
+another's pixels.
+
+**Flips are noticed.** The cache keys on the pointer's own identity plus the
+resolved generation's contents, so an A → B flip, a B → A flip back and a new
+generation directory are all picked up without a restart, even when names are
+reused.
+
+**Pruning limit, reported honestly.** The producer keeps the published
+generation plus two superseded ones and deletes anything older. A snapshot that
+has already pinned a generation can therefore find its files deleted underneath
+it, for instance on a repeated A → B → A cycle. In that case the imagery request
+returns a controlled `503`. It is deliberately **not** retried against the
+current pointer: serving different pixels under a URL the client already holds
+would be worse than an honest failure. The next `/api/status` picks up whatever
+is published then.
+
 The bundle is validated once and cached, and revalidated automatically when the
 bundle directory changes (per-file size, mtime and inode). Dropping a new bundle
 into place is picked up without a restart.
@@ -204,8 +249,30 @@ interpreted as a path.
 
 `key` must be `before`, `after` or `change`; anything else is `404`. The bytes
 are read from the bundle file declared by the analysis document, served as
-`image/png`. Only declared, contained, regular (non-symlink) PNG files are ever
-read; there is no directory listing and no static mount.
+`image/png`, out of the generation the request's snapshot pinned. Only declared,
+contained, regular (non-symlink) PNG files are ever read; there is no directory
+listing and no static mount.
+
+### Generation safety across requests
+
+Because each HTTP request re-reads the pointer, two separate requests can
+legitimately see two different generations. To stop a client silently receiving
+imagery from an analysis it never looked at, `/api/analysis` returns each image
+URL with the current `analysis_id` already attached:
+
+```
+/api/imagery/before?analysis_id=<analysis_id>
+```
+
+`/api/imagery/{key}` therefore accepts an optional `analysis_id` query
+parameter. If it is supplied and does not match the published analysis, the
+answer is **`409`** with a `detail` naming the stale id — never different
+pixels. Omitting it keeps the original behaviour and returns whatever is
+published now, so existing bare URLs keep working.
+
+Frontend guidance: use the URLs `/api/analysis` hands you rather than building
+your own, and on a `409` re-fetch `/api/analysis` and reload with the URLs it
+returns. No new endpoint path is involved.
 
 The three previews are identically warped onto the analysis grid, so each
 `imagery.<key>.bounds` must be **exactly equal** to `analysis.bbox`. A mismatch
@@ -222,6 +289,7 @@ raw parser output or environment contents.
 | --- | --- |
 | `404` | No result bundle has been produced yet, unknown region id, or unknown imagery key. |
 | `405` | A non-`GET` method was used; the API is read-only. |
+| `409` | The `analysis_id` on an image request is no longer the published analysis; reload. |
 | `503` | A bundle exists but fails validation, or a declared preview became unreadable. |
 
 OpenAPI is at `/openapi.json`, and `/docs` for the generated explorer.

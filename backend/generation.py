@@ -28,6 +28,7 @@ import re
 import stat as stat_module
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 #: Separators and traversal that may never appear in a pointer target.
 _FORBIDDEN = ("/", os.sep, "\\")
@@ -45,6 +46,20 @@ class GenerationRejected(ValueError):
         self.reason = reason
 
 
+#: Identity of a directory: ``(device, inode, entries)`` where entries is the
+#: ``(name, size, mtime_ns, inode, mode)`` of everything directly inside it.
+#:
+#: The inode alone is not enough. Deleting a directory and recreating one at the
+#: same path can hand back the same inode, and on this filesystem even
+#: ``st_ctime_ns`` repeated across a delete-and-recreate in the same tick, so
+#: neither identifies the prune-and-republish case on its own. Folding in the
+#: entries' own size, mtime and inode does, because a recreated directory gets
+#: freshly written files. It also means a generation modified underneath a pinned
+#: snapshot - an entry added, removed, renamed or rewritten - is refused, which
+#: is the safe direction to fail.
+RootIdentity = tuple[int, int, tuple[tuple[Any, ...], ...]]
+
+
 @dataclass(frozen=True)
 class ResolvedRoot:
     """Where the bundle for one snapshot actually lives."""
@@ -52,6 +67,68 @@ class ResolvedRoot:
     path: Path
     is_pointer: bool
     generation: str | None = None
+    identity: RootIdentity | None = None
+
+
+def directory_entries(path: Path) -> tuple[tuple[Any, ...], ...] | None:
+    """Cheap fingerprint of a directory's direct contents, or None if unreadable."""
+    try:
+        entries = []
+        for entry in sorted(path.iterdir(), key=lambda item: item.name):
+            try:
+                info = entry.lstat()
+            except OSError:
+                entries.append((entry.name, "unreadable"))
+                continue
+            entries.append(
+                (
+                    entry.name,
+                    info.st_size,
+                    info.st_mtime_ns,
+                    info.st_ino,
+                    info.st_mode,
+                )
+            )
+        return tuple(entries)
+    except OSError:
+        return None
+
+
+def root_identity(path: Path) -> RootIdentity | None:
+    """The directory identity used to pin a snapshot, or None if unreadable."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return None
+    entries = directory_entries(path)
+    if entries is None:
+        return None
+    return info.st_dev, info.st_ino, entries
+
+
+def check_pinned_root(path: Path, expected: RootIdentity | None) -> None:
+    """Refuse to use ``path`` unless it is still the directory we validated.
+
+    Cheap: one ``lstat``. Without it a generation directory that was renamed
+    away, deleted, or replaced - including replaced by a symlink to somewhere
+    outside - would be followed, and the request would serve bytes that never
+    belonged to the pinned snapshot. Raises ``OSError`` so the caller answers a
+    controlled 503.
+    """
+    try:
+        info = os.lstat(path)
+    except OSError:
+        raise OSError("the pinned generation is no longer present") from None
+    if stat_module.S_ISLNK(info.st_mode):
+        raise OSError("the pinned generation was replaced by a symlink")
+    if not stat_module.S_ISDIR(info.st_mode):
+        raise OSError("the pinned generation is no longer a directory")
+    if expected is not None:
+        entries = directory_entries(path)
+        if (info.st_dev, info.st_ino, entries) != tuple(expected):
+            raise OSError(
+                "the pinned generation was replaced or modified since it was validated"
+            )
 
 
 def generation_pattern(root_name: str) -> re.Pattern[str]:
@@ -77,7 +154,11 @@ def resolve_bundle_root(configured: Path) -> ResolvedRoot | None:
     if not stat_module.S_ISLNK(info.st_mode):
         if not stat_module.S_ISDIR(info.st_mode):
             raise GenerationRejected("the bundle root is not a directory")
-        return ResolvedRoot(path=configured, is_pointer=False)
+        return ResolvedRoot(
+            path=configured,
+            is_pointer=False,
+            identity=root_identity(configured),
+        )
 
     return _resolve_pointer(configured)
 
@@ -123,12 +204,21 @@ def _resolve_pointer(configured: Path) -> ResolvedRoot:
         raise GenerationRejected("the bundle root pointer does not name a directory")
     if generation.parent != parent or generation.name != target:
         raise GenerationRejected("the bundle root pointer escapes its parent")
-    return ResolvedRoot(path=generation, is_pointer=True, generation=target)
+    return ResolvedRoot(
+        path=generation,
+        is_pointer=True,
+        generation=target,
+        identity=root_identity(generation),
+    )
 
 
 __all__ = [
     "GenerationRejected",
     "ResolvedRoot",
+    "RootIdentity",
+    "check_pinned_root",
+    "directory_entries",
     "generation_pattern",
     "resolve_bundle_root",
+    "root_identity",
 ]

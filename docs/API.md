@@ -93,6 +93,20 @@ snapshot pinned — the pointer is never rediscovered while serving. A swap part
 way through a load therefore cannot pair one generation's metadata with
 another's pixels.
 
+**The pinned root is verified before every read.** Resolving the pinned path on
+each read would follow a symlink that had replaced it after validation and serve
+bytes from outside the bundle, so the pinned path is used as given and its
+identity is re-checked with one `lstat` first: it must still be a real
+directory, not a symlink, and its identity must still match the one recorded at
+validation. Identity is `(device, inode, entries)` where entries is each direct
+child's name, size, mtime, inode and mode. The inode alone is not enough —
+deleting a directory and recreating one at the same path can hand back the same
+inode, which is exactly the prune-and-republish case — and on this filesystem
+`st_ctime_ns` even repeats across a delete-and-recreate in the same tick, so the
+entries are what distinguish a recreated directory. A renamed, deleted, replaced
+or modified pinned generation is refused with a controlled `503`; the request
+never falls back to the pointer or to an alias of the same path.
+
 **Flips are noticed.** The cache keys on the pointer's own identity plus the
 resolved generation's contents, so an A → B flip, a B → A flip back and a new
 generation directory are all picked up without a restart, even when names are

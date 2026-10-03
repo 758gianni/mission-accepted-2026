@@ -23,7 +23,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from .generation import GenerationRejected, ResolvedRoot, resolve_bundle_root
+from .generation import (
+    GenerationRejected,
+    ResolvedRoot,
+    RootIdentity,
+    resolve_bundle_root,
+    root_identity,
+)
 from .validation import (
     ANALYSIS_FILENAME,
     REGIONS_FILENAME,
@@ -59,6 +65,7 @@ class BundleSnapshot:
     scene_count: int = 0
     bundle: ValidatedBundle | None = None
     generation_dir: Path | None = None
+    root_identity: RootIdentity | None = None
 
     @property
     def is_ready(self) -> bool:
@@ -143,6 +150,7 @@ def _load(bundle_dir: Path) -> BundleSnapshot:
         scene_count=validated.scene_count,
         bundle=validated,
         generation_dir=root,
+        root_identity=resolved.identity or root_identity(root),
     )
 
 

@@ -259,7 +259,9 @@ def create_app(
         # Read from the generation pinned when this snapshot was taken, never
         # by rediscovering the pointer, so a swap mid-request cannot mix them.
         try:
-            data = _read_png(current.generation_dir, entry.filename)
+            data = _read_png(
+                current.generation_dir, entry.filename, current.root_identity
+            )
         except OSError:
             return JSONResponse(
                 {"detail": "The declared image preview is no longer readable."}, status_code=503
@@ -277,16 +279,28 @@ def _guard(current: BundleSnapshot) -> Response | None:
     return None
 
 
-def _read_png(bundle_dir: Path, filename: str) -> bytes:
-    """Containment and signature guard on the hot read path.
+def _read_png(
+    bundle_dir: Path,
+    filename: str,
+    expected_identity: tuple[Any, ...] | None = None,
+) -> bytes:
+    """Read a declared preview out of the generation this snapshot pinned.
 
-    Full integrity is established when the bundle is validated, and the
-    snapshot is revalidated whenever a declared file changes, so this only
-    re-checks the cheap invariants and the size bound before handing bytes back.
+    The pinned directory is used as given and is never resolved: resolving it
+    would follow a symlink that replaced it after validation and serve bytes
+    from outside the bundle. Instead its identity is re-checked with one lstat,
+    which also covers a directory that was renamed away, deleted, or replaced
+    by a different directory at the same path.
+
+    Full integrity is established when the bundle is validated, and the snapshot
+    is revalidated whenever a declared file changes, so this only re-checks the
+    cheap invariants and the size bound before handing bytes back.
     """
+    from .generation import check_pinned_root
     from .pngcheck import MAX_IMAGE_BYTES, PNG_SIGNATURE
 
-    root = Path(bundle_dir).resolve()
+    root = Path(bundle_dir)
+    check_pinned_root(root, expected_identity)
     candidate = root / filename
     if candidate.parent != root or candidate.is_symlink():
         raise OSError("imagery path is not a contained regular file")

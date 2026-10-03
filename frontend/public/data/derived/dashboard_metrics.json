@@ -1,0 +1,304 @@
+{
+  "total_candidates_analyzed": 525,
+  "persistent_candidates_total": 80,
+  "persistent_high_priority_clean": 79,
+  "persistent_terrain_flagged": 1,
+  "seasonal_transient_valley_regions": 440,
+  "terrain_risk_pixels_pct": 21.84,
+  "elevation_range_m": [
+    88.0,
+    2687.3
+  ],
+  "top_persistent_candidates": [
+    {
+      "id": 2,
+      "label": "persistent radar change",
+      "class_id": 1,
+      "direction": "decrease",
+      "area_ha": 148.72085194498052,
+      "pixel_count": 413,
+      "mean_change_db": 6.730761528015137,
+      "max_change_db": 9.483627319335938,
+      "mean_signed_db": -6.730761528015137,
+      "first_observed": "2024-11-20T11:46:56.693237Z",
+      "observation_interval": [
+        "2024-04-18T11:46:55.497558Z",
+        "2024-11-20T11:46:56.693237Z"
+      ],
+      "persists_into_T3": true,
+      "mean_power_by_date": [
+        0.17030733823776245,
+        0.03800046071410179,
+        0.03988843411207199
+      ],
+      "interpretation": "Unvalidated radar-change candidate; terrain, registration and moisture may explain the signal.",
+      "mean_slope_deg": 0.15,
+      "max_slope_deg": 0.81,
+      "mean_elevation_m": 107.2,
+      "terrain_risk_pct": 0.0,
+      "terrain_tier": "Low Risk (Flat Lowland)",
+      "priority_score": 82.08
+    },
+    {
+      "id": 11,
+      "label": "persistent radar change",
+      "class_id": 1,
+      "direction": "decrease",
+      "area_ha": 52.212197933493506,
+      "pixel_count": 145,
+      "mean_change_db": 7.353702545166016,
+      "max_change_db": 10.19089126586914,
+      "mean_signed_db": -7.353702545166016,
+      "first_observed": "2024-11-20T11:46:56.693237Z",
+      "observation_interval": [
+        "2024-04-18T11:46:55.497558Z",
+        "2024-11-20T11:46:56.693237Z"
+      ],
+      "persists_into_T3": true,
+      "mean_power_by_date": [
+        0.1935299038887024,
+        0.03705940395593643,
+        0.03939051926136017
+      ],
+      "interpretation": "Unvalidated radar-change candidate; terrain, registration and moisture may explain the signal.",
+      "mean_slope_deg": 0.18,
+      "max_slope_deg": 0.77,
+      "mean_elevation_m": 93.5,
+      "terrain_risk_pct": 0.0,
+      "terrain_tier": "Low Risk (Flat Lowland)",
+      "priority_score": 53.14
+    },
+    {
+      "id": 35,
+      "label": "persistent radar change",
+      "class_id": 1,
+      "direction": "increase",
+      "area_ha": 99.7722839752557,
+      "pixel_count": 277,
+      "mean_change_db": 4.7944512367248535,
+      "max_change_db": 6.905493259429932,
+      "mean_signed_db": 4.7944512367248535,
+      "first_observed": "2024-11-20T11:46:56.693237Z",
+      "observation_interval": [
+        "2024-04-18T11:46:55.497558Z",
+        "2024-11-20T11:46:56.693237Z"
+      ],
+      "persists_into_T3": true,
+      "mean_power_by_date": [
+        0.06452279537916183,
+        0.19523662328720093,
+        0.17099998891353607
+      ],
+      "interpretation": "Unvalidated radar-change candidate; terrain, registration and moisture may explain the signal.",
+      "mean_slope_deg": 0.25,
+      "max_slope_deg": 0.55,
+      "mean_elevation_m": 146.4,
+      "terrain_risk_pct": 0.0,
+      "terrain_tier": "Low Risk (Flat Lowland)",
+      "priority_score": 47.89
+    },
+    {
+      "id": 65,
+      "label": "persistent radar change",
+      "class_id": 1,
+      "direction": "increase",
+      "area_ha": 91.48506636893532,
+      "pixel_count": 254,
+      "mean_change_db": 4.218532085418701,
+      "max_change_db": 6.125698566436768,
+      "mean_signed_db": 4.218532085418701,
+      "first_observed": "2024-11-20T11:46:56.693237Z",
+      "observation_interval": [
+        "2024-04-18T11:46:55.497558Z",
+        "2024-11-20T11:46:56.693237Z"
+      ],
+      "persists_into_T3": true,
+      "mean_power_by_date": [
+        0.06913862377405167,
+        0.1825912594795227,
+        0.17225408554077148
+      ],
+      "interpretation": "Unvalidated radar-change candidate; terrain, registration and moisture may explain the signal.",
+      "mean_slope_deg": 0.25,
+      "max_slope_deg": 1.67,
+      "mean_elevation_m": 142.4,
+      "terrain_risk_pct": 0.0,
+      "terrain_tier": "Low Risk (Flat Lowland)",
+      "priority_score": 40.35
+    },
+    {
+      "id": 71,
+      "label": "persistent radar change",
+      "class_id": 1,
+      "direction": "increase",
+      "area_ha": 60.86988550548754,
+      "pixel_count": 169,
+      "mean_change_db": 4.551504611968994,
+      "max_change_db": 6.568612575531006,
+      "mean_signed_db": 4.551504611968994,
+      "first_observed": "2024-11-20T11:46:56.693237Z",
+      "observation_interval": [
+        "2024-04-18T11:46:55.497558Z",
+        "2024-11-20T11:46:56.693237Z"
+      ],
+      "persists_into_T3": true,
+      "mean_power_by_date": [
+        0.0706610232591629,
+        0.20150506496429443,
+        0.17471331357955933
+      ],
+      "interpretation": "Unvalidated radar-change candidate; terrain, registration and moisture may explain the signal.",
+      "mean_slope_deg": 0.27,
+      "max_slope_deg": 0.9,
+      "mean_elevation_m": 145.5,
+      "terrain_risk_pct": 0.0,
+      "terrain_tier": "Low Risk (Flat Lowland)",
+      "priority_score": 35.51
+    },
+    {
+      "id": 1,
+      "label": "persistent radar change",
+      "class_id": 1,
+      "direction": "decrease",
+      "area_ha": 19.44515301658828,
+      "pixel_count": 54,
+      "mean_change_db": 6.78225040435791,
+      "max_change_db": 9.49399471282959,
+      "mean_signed_db": -6.78225040435791,
+      "first_observed": "2024-11-20T11:46:56.693237Z",
+      "observation_interval": [
+        "2024-04-18T11:46:55.497558Z",
+        "2024-11-20T11:46:56.693237Z"
+      ],
+      "persists_into_T3": true,
+      "mean_power_by_date": [
+        0.16714684665203094,
+        0.0374811552464962,
+        0.038686562329530716
+      ],
+      "interpretation": "Unvalidated radar-change candidate; terrain, registration and moisture may explain the signal.",
+      "mean_slope_deg": 0.1,
+      "max_slope_deg": 0.25,
+      "mean_elevation_m": 107.7,
+      "terrain_risk_pct": 0.0,
+      "terrain_tier": "Low Risk (Flat Lowland)",
+      "priority_score": 29.91
+    },
+    {
+      "id": 30,
+      "label": "persistent radar change",
+      "class_id": 1,
+      "direction": "increase",
+      "area_ha": 28.814891420459375,
+      "pixel_count": 80,
+      "mean_change_db": 4.902780055999756,
+      "max_change_db": 6.213099002838135,
+      "mean_signed_db": 4.902780055999756,
+      "first_observed": "2024-11-20T11:46:56.693237Z",
+      "observation_interval": [
+        "2024-04-18T11:46:55.497558Z",
+        "2024-11-20T11:46:56.693237Z"
+      ],
+      "persists_into_T3": true,
+      "mean_power_by_date": [
+        0.06438492238521576,
+        0.2000216543674469,
+        0.1717032641172409
+      ],
+      "interpretation": "Unvalidated radar-change candidate; terrain, registration and moisture may explain the signal.",
+      "mean_slope_deg": 0.22,
+      "max_slope_deg": 0.53,
+      "mean_elevation_m": 140.9,
+      "terrain_risk_pct": 0.0,
+      "terrain_tier": "Low Risk (Flat Lowland)",
+      "priority_score": 26.32
+    },
+    {
+      "id": 28,
+      "label": "persistent radar change",
+      "class_id": 1,
+      "direction": "increase",
+      "area_ha": 29.175379399845518,
+      "pixel_count": 81,
+      "mean_change_db": 4.681912422180176,
+      "max_change_db": 5.627188682556152,
+      "mean_signed_db": 4.681912422180176,
+      "first_observed": "2024-11-20T11:46:56.693237Z",
+      "observation_interval": [
+        "2024-04-18T11:46:55.497558Z",
+        "2024-11-20T11:46:56.693237Z"
+      ],
+      "persists_into_T3": true,
+      "mean_power_by_date": [
+        0.05129052326083183,
+        0.1507195085287094,
+        0.12176407873630524
+      ],
+      "interpretation": "Unvalidated radar-change candidate; terrain, registration and moisture may explain the signal.",
+      "mean_slope_deg": 0.59,
+      "max_slope_deg": 1.29,
+      "mean_elevation_m": 151.1,
+      "terrain_risk_pct": 0.0,
+      "terrain_tier": "Low Risk (Flat Lowland)",
+      "priority_score": 25.29
+    },
+    {
+      "id": 44,
+      "label": "persistent radar change",
+      "class_id": 1,
+      "direction": "increase",
+      "area_ha": 44.30324441715269,
+      "pixel_count": 123,
+      "mean_change_db": 3.7445499897003174,
+      "max_change_db": 4.781429290771484,
+      "mean_signed_db": 3.7445499897003174,
+      "first_observed": "2024-11-20T11:46:56.693237Z",
+      "observation_interval": [
+        "2024-04-18T11:46:55.497558Z",
+        "2024-11-20T11:46:56.693237Z"
+      ],
+      "persists_into_T3": true,
+      "mean_power_by_date": [
+        0.05353155359625816,
+        0.1274222880601883,
+        0.12080404162406921
+      ],
+      "interpretation": "Unvalidated radar-change candidate; terrain, registration and moisture may explain the signal.",
+      "mean_slope_deg": 0.24,
+      "max_slope_deg": 0.95,
+      "mean_elevation_m": 149.4,
+      "terrain_risk_pct": 0.0,
+      "terrain_tier": "Low Risk (Flat Lowland)",
+      "priority_score": 24.92
+    },
+    {
+      "id": 10,
+      "label": "persistent radar change",
+      "class_id": 1,
+      "direction": "decrease",
+      "area_ha": 25.928098039921885,
+      "pixel_count": 72,
+      "mean_change_db": 4.658738136291504,
+      "max_change_db": 6.856522560119629,
+      "mean_signed_db": -4.658738136291504,
+      "first_observed": "2024-11-20T11:46:56.693237Z",
+      "observation_interval": [
+        "2024-04-18T11:46:55.497558Z",
+        "2024-11-20T11:46:56.693237Z"
+      ],
+      "persists_into_T3": true,
+      "mean_power_by_date": [
+        0.06810958683490753,
+        0.022967295721173286,
+        0.02167324908077717
+      ],
+      "interpretation": "Unvalidated radar-change candidate; terrain, registration and moisture may explain the signal.",
+      "mean_slope_deg": 0.16,
+      "max_slope_deg": 2.08,
+      "mean_elevation_m": 93.5,
+      "terrain_risk_pct": 0.0,
+      "terrain_tier": "Low Risk (Flat Lowland)",
+      "priority_score": 23.72
+    }
+  ]
+}

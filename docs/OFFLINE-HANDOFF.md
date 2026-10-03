@@ -63,4 +63,3 @@ State is the pre-recovery snapshot. Failed/recovery-required rows subsequently r
 These are checkpoints, not automatically the latest VM heads. Query final publication before merging. Branches follow swarmforge/forest-change-20261002/TASK/WORKER_ID.
 
 Detected GDAL calibrated SIGMA0 is linear power, not amplitude. SGF does not establish geocoding or ScanSAR processing. Matching grids do not establish registration. Catalog spacing is not resolution. Priority is a transparent magnitude/area index, not confidence. Two-date persistence/history remain unavailable. Never infer cause or publish fixtures as real change evidence.
-

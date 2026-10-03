@@ -192,8 +192,12 @@ def main() -> int:
         "t4": {
             "available": bool(t4),
             "regions_tested": t4_region_count,
+            "summary": t4.get("summary"),
             "note": (
-                "T4 validation pending. Re-run build_contract.py with --t4-results "
+                "T4 validation applied. Confirmed persistent candidates are "
+                "reclassified as t4_validated_persistent."
+                if t4
+                else "T4 validation pending. Re-run build_contract.py with --t4-results "
                 "to flip persistent candidates into t4_validated_persistent."
             ),
         },
@@ -203,7 +207,19 @@ def main() -> int:
             {"step": 3, "id": "persistent", "title": "Persistent anomalies", "detail": "80 regions do not return toward baseline. Filter to this class."},
             {"step": 4, "id": "region-2", "title": "Region 2", "detail": "148.7 ha, -6.7 dB mean signed change, flat lowland, priority score 82.1."},
             {"step": 5, "id": "terrain-qa", "title": "Terrain QA", "detail": "Copernicus GLO-30 DEM: 0% terrain risk, 0.15 deg mean slope. Not a terrain artifact."},
-            {"step": 6, "id": "t4", "title": "T4 validation", "detail": "Hold the anomaly against the 2024-12-21 acquisition when it lands."},
+            {
+                "step": 6,
+                "id": "t4",
+                "title": "T4 validation",
+                "detail": (
+                    f"{t4.get('summary', {}).get('survived_confirmed', 0)} of "
+                    f"{t4.get('summary', {}).get('covered_in_t4', 0)} candidates inside the T4 swath "
+                    "held through the 2024-12-21 acquisition. Region 2 remains a "
+                    "-6.7 dB drop on T2 and -4.8 dB on T4."
+                    if t4
+                    else "Hold the anomaly against the 2024-12-21 acquisition when it lands."
+                ),
+            },
         ],
     }
     (out / "derived" / "contract.json").write_text(json.dumps(contract, indent=2))
@@ -213,19 +229,19 @@ def main() -> int:
 
     # --- imagery --------------------------------------------------------
     imagery = {
-        "temporal_rgb": "imagery/temporal_rgb.png",
-        "terrain_qa_mask": "imagery/terrain_qa_mask.png",
-        "persistent_candidates": "imagery/persistent_candidates_map.png",
-        "seasonal_transient": "imagery/seasonal_transient_candidates_map.png",
-        "change_t1_t3": "imagery/T1_to_T3_signed_db.png",
-        "change_t1_t2": "imagery/T1_to_T2_signed_db.png",
-        "change_t2_t3": "imagery/T2_to_T3_signed_db.png",
-        "quicklook_t1": "imagery/T1_quicklook.png",
-        "quicklook_t2": "imagery/T2_quicklook.png",
-        "quicklook_t3": "imagery/T3_quicklook.png",
-        "crop_t1": "imagery/top_candidate_T1.png",
-        "crop_t2": "imagery/top_candidate_T2.png",
-        "crop_t3": "imagery/top_candidate_T3.png",
+        "temporal_rgb": "data/imagery/temporal_rgb.png",
+        "terrain_qa_mask": "data/imagery/terrain_qa_mask.png",
+        "persistent_candidates": "data/imagery/persistent_candidates_map.png",
+        "seasonal_transient": "data/imagery/seasonal_transient_candidates_map.png",
+        "change_t1_t3": "data/imagery/T1_to_T3_signed_db.png",
+        "change_t1_t2": "data/imagery/T1_to_T2_signed_db.png",
+        "change_t2_t3": "data/imagery/T2_to_T3_signed_db.png",
+        "quicklook_t1": "data/imagery/T1_quicklook.png",
+        "quicklook_t2": "data/imagery/T2_quicklook.png",
+        "quicklook_t3": "data/imagery/T3_quicklook.png",
+        "crop_t1": "data/imagery/top_candidate_T1.png",
+        "crop_t2": "data/imagery/top_candidate_T2.png",
+        "crop_t3": "data/imagery/top_candidate_T3.png",
     }
     copies = {
         "imagery/temporal_rgb.png": derived / "change" / "temporal_rgb.png",
@@ -250,11 +266,13 @@ def main() -> int:
             missing.append(str(src))
 
     # Comparison strip: T1/T2/T3 quicklooks plus a T4 placeholder slot.
+    t4_crop_available = (out / "imagery" / "T4_quicklook.png").exists()
+    t4_slot_image = "data/imagery/T4_quicklook.png" if t4_crop_available else None
     comparisons = [
         {"id": "T1", "date": "2024-04-18", "image": imagery["quicklook_t1"], "available": True},
         {"id": "T2", "date": "2024-11-20", "image": imagery["quicklook_t2"], "available": True},
         {"id": "T3", "date": "2025-01-07", "image": imagery["quicklook_t3"], "available": True},
-        {"id": "T4", "date": "2024-12-21", "image": None, "available": False},
+        {"id": "T4", "date": "2024-12-21", "image": t4_slot_image, "available": t4_crop_available},
     ]
     contract["imagery"] = imagery
     contract["comparisons"] = comparisons

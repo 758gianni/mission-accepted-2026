@@ -1,6 +1,6 @@
 {
   "contract_version": 2,
-  "generated": "2026-10-03T21:12:02.217773+00:00",
+  "generated": "2026-10-03T21:38:41.824186+00:00",
   "scene": {
     "footprint": {
       "west": 93.25067860517936,
@@ -43,6 +43,15 @@
       "polarization": "HH",
       "orbit": "Ascending",
       "role": "persistence check"
+    },
+    {
+      "id": "T4",
+      "date": "2024-12-21",
+      "iso": "2024-12-21T11:42:43Z",
+      "beam": "XF0W2",
+      "polarization": "HH",
+      "orbit": "Ascending",
+      "role": "persistence validation"
     }
   ],
   "temporal_classes": {
@@ -77,8 +86,8 @@
   },
   "counts": {
     "seasonal_transient": 440,
-    "persistent": 80,
-    "t4_validated_persistent": 0,
+    "persistent": 69,
+    "t4_validated_persistent": 11,
     "late_unclassified": 5
   },
   "metrics": {
@@ -386,9 +395,16 @@
     ]
   },
   "t4": {
-    "available": false,
-    "regions_tested": 0,
-    "note": "T4 validation pending. Re-run build_contract.py with --t4-results to flip persistent candidates into t4_validated_persistent."
+    "available": true,
+    "regions_tested": 80,
+    "summary": {
+      "total_tested": 80,
+      "covered_in_t4": 11,
+      "survived_confirmed": 11,
+      "weakened_transient": 0,
+      "outside_t4_swath": 69
+    },
+    "note": "T4 validation applied. Confirmed persistent candidates are reclassified as t4_validated_persistent."
   },
   "presentation_path": [
     {
@@ -425,48 +441,48 @@
       "step": 6,
       "id": "t4",
       "title": "T4 validation",
-      "detail": "Hold the anomaly against the 2024-12-21 acquisition when it lands."
+      "detail": "11 of 11 candidates inside the T4 swath held through the 2024-12-21 acquisition. Region 2 remains a -6.7 dB drop on T2 and -4.8 dB on T4."
     }
   ],
   "imagery": {
-    "temporal_rgb": "imagery/temporal_rgb.png",
-    "terrain_qa_mask": "imagery/terrain_qa_mask.png",
-    "persistent_candidates": "imagery/persistent_candidates_map.png",
-    "seasonal_transient": "imagery/seasonal_transient_candidates_map.png",
-    "change_t1_t3": "imagery/T1_to_T3_signed_db.png",
-    "change_t1_t2": "imagery/T1_to_T2_signed_db.png",
-    "change_t2_t3": "imagery/T2_to_T3_signed_db.png",
-    "quicklook_t1": "imagery/T1_quicklook.png",
-    "quicklook_t2": "imagery/T2_quicklook.png",
-    "quicklook_t3": "imagery/T3_quicklook.png",
-    "crop_t1": "imagery/top_candidate_T1.png",
-    "crop_t2": "imagery/top_candidate_T2.png",
-    "crop_t3": "imagery/top_candidate_T3.png"
+    "temporal_rgb": "data/imagery/temporal_rgb.png",
+    "terrain_qa_mask": "data/imagery/terrain_qa_mask.png",
+    "persistent_candidates": "data/imagery/persistent_candidates_map.png",
+    "seasonal_transient": "data/imagery/seasonal_transient_candidates_map.png",
+    "change_t1_t3": "data/imagery/T1_to_T3_signed_db.png",
+    "change_t1_t2": "data/imagery/T1_to_T2_signed_db.png",
+    "change_t2_t3": "data/imagery/T2_to_T3_signed_db.png",
+    "quicklook_t1": "data/imagery/T1_quicklook.png",
+    "quicklook_t2": "data/imagery/T2_quicklook.png",
+    "quicklook_t3": "data/imagery/T3_quicklook.png",
+    "crop_t1": "data/imagery/top_candidate_T1.png",
+    "crop_t2": "data/imagery/top_candidate_T2.png",
+    "crop_t3": "data/imagery/top_candidate_T3.png"
   },
   "comparisons": [
     {
       "id": "T1",
       "date": "2024-04-18",
-      "image": "imagery/T1_quicklook.png",
+      "image": "data/imagery/T1_quicklook.png",
       "available": true
     },
     {
       "id": "T2",
       "date": "2024-11-20",
-      "image": "imagery/T2_quicklook.png",
+      "image": "data/imagery/T2_quicklook.png",
       "available": true
     },
     {
       "id": "T3",
       "date": "2025-01-07",
-      "image": "imagery/T3_quicklook.png",
+      "image": "data/imagery/T3_quicklook.png",
       "available": true
     },
     {
       "id": "T4",
       "date": "2024-12-21",
-      "image": null,
-      "available": false
+      "image": "data/imagery/T4_quicklook.png",
+      "available": true
     }
   ],
   "image_bounds": {

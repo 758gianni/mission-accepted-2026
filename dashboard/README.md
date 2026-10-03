@@ -53,19 +53,57 @@ The frontend reads `temporal_class` and `t4_status` from the GeoJSON/JSON.
 T4 results therefore land as a data update, not a code change:
 
 1. Run `pipeline_4date.py` once the 2024-12-21 frames are downloaded and CRC-verified.
-2. Produce a `t4_results.json` via `dashboard/scripts/t4_results_adapter.py`.
-3. Regenerate the contract:
+2. Adapt its evaluation output:
+
+   ```bash
+   python3 dashboard/scripts/t4_results_adapter.py \
+     --pipeline-output /home/overlord/hackathon/rs2-analysis/data/derived/exploration_4date \
+     --out /tmp/t4_results.json
+   ```
+
+3. Render the T4 comparison tile (analysis venv: rasterio/numpy/Pillow):
+
+   ```bash
+   python3 dashboard/scripts/render_t4_quicklook.py
+   ```
+
+4. Regenerate the contract:
 
    ```bash
    python3 dashboard/scripts/build_contract.py \
-     --t4-results /path/to/t4_results.json \
+     --t4-results /tmp/t4_results.json \
      --out frontend/public/data
    ```
 
-4. Reload the dashboard. Confirmed regions flip to `t4_validated_persistent`,
+5. Reload the dashboard. Confirmed regions flip to `t4_validated_persistent`,
    the T4 comparison slot fills in, and the counts update.
 
 No frontend source change is required for any of this.
+
+### Current T4 result (2024-12-21 XF0W2 ascending HH)
+
+| Metric | Value |
+| --- | --- |
+| Persistent candidates tested | 80 |
+| Covered by T4 swath | 11 |
+| Survived and confirmed | 11 |
+| Weakened / transient | 0 |
+| Outside T4 swath | 69 |
+
+Region 2 (148.7 ha) holds: **-6.7 dB** on T2, **-4.8 dB** on T4, **-6.5 dB** on T3,
+on flat lowland (0.15 deg mean slope, 0% terrain risk).
+
+## Smoke test
+
+```bash
+cd frontend
+npm run dev -- --port 5199 --host 127.0.0.1 &
+node smoke.mjs
+```
+
+Requires Playwright Chromium (`npx playwright install chromium`). The smoke test
+asserts the map, filters, layers, inspector fields, image decoding and the live
+T4-validated counts, then captures the presentation path as screenshots.
 
 ## Presentation path
 

@@ -63,8 +63,21 @@ const Inspector = ({ contract, region }: Props) => {
 				<Row label='Temporal class' value={meta.label} accent={meta.color} />
 				<Row label='Priority score' value={formatScore(region.priority_score)} />
 				<Row label='First observed' value={region.first_observed.slice(0, 10)} />
-				<Row label='T4 status' value={region.t4_status} />
+				<Row label='T4 status' value={region.t4_status} accent={region.t4_status === 'confirmed' ? '#b0306a' : undefined} />
+				{region.t4_mean_power != null && (
+					<Row label='T4 mean power' value={region.t4_mean_power.toFixed(5)} />
+				)}
+				{region.t4_mean_signed_db != null && (
+					<Row label='T4 signed change' value={formatDb(region.t4_mean_signed_db)} accent={region.t4_mean_signed_db < 0 ? '#b0306a' : '#163f52'} />
+				)}
 			</div>
+
+			{region.t4_observation && (
+				<p className='rounded border border-rule bg-selected/50 px-2.5 py-2 text-xs leading-relaxed text-body'>
+					<span className='font-semibold text-ink'>T4 evidence: </span>
+					{region.t4_observation}
+				</p>
+			)}
 
 			<section>
 				<h3 className='mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted'>Power by acquisition</h3>
@@ -80,13 +93,21 @@ const Inspector = ({ contract, region }: Props) => {
 							</div>
 						);
 					})}
-					{contract.t4.available && (
-						<div className='flex flex-1 flex-col items-center gap-1 opacity-45'>
-							<span className='text-[10px] tabular-nums text-muted'>{region.t4_mean_power?.toFixed(3) ?? '—'}</span>
-							<div className='w-full rounded-t border border-dashed border-edge bg-transparent' style={{ height: 40 }} />
-							<span className='text-[10px] font-semibold text-muted'>T4</span>
-						</div>
-					)}
+					{contract.t4.available && (() => {
+						const max = Math.max(...region.mean_power_by_date, region.t4_mean_power ?? 0, 1e-6);
+						const t4val = region.t4_mean_power;
+						const h = t4val != null ? Math.max(6, (t4val / max) * 72) : 40;
+						return (
+							<div className={`flex flex-1 flex-col items-center gap-1 ${t4val == null ? 'opacity-45' : ''}`}>
+								<span className='text-[10px] tabular-nums text-muted'>{t4val != null ? t4val.toFixed(3) : '—'}</span>
+								<div
+									className={`w-full rounded-t ${t4val != null ? 'bg-radar' : 'border border-dashed border-edge bg-transparent'}`}
+									style={{ height: h }}
+								/>
+								<span className='text-[10px] font-semibold text-muted'>T4</span>
+							</div>
+						);
+					})()}
 				</div>
 			</section>
 

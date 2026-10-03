@@ -45,9 +45,8 @@ const MapView = ({ contract, regions, activeClasses, layers, selectedId, onSelec
 			maxZoom: 15,
 		});
 		map.fitBounds(bounds, { padding: [8, 8] });
-		L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-			attribution: '&copy; OpenStreetMap &copy; CARTO',
-			subdomains: 'abcd',
+		L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+			attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
 			maxZoom: 15,
 		}).addTo(map);
 		mapRef.current = map;

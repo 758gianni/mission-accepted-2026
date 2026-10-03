@@ -40,13 +40,14 @@ const ChatPanel = ({ selectedClearing, sensitivityDb, suggestions = [], title = 
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({
-				messages: history.map(({ role, content }) => ({ role, content })),
+				messages: history.slice(-40).map(({ role, content }) => ({ role, content })),
 				context: { selectedClearing, sensitivityDb },
 			}),
 		});
 
 		if (!response.ok) {
-			throw new Error(`Chat request failed: ${response.status}`);
+			const failure: unknown = await response.json().catch(() => null);
+			throw new Error(failure && typeof failure === 'object' && 'error' in failure && typeof failure.error === 'string' ? failure.error : 'Could not get a reply. Please try again.');
 		}
 
 		const data: unknown = await response.json();
@@ -80,7 +81,7 @@ const ChatPanel = ({ selectedClearing, sensitivityDb, suggestions = [], title = 
 			setMessages([...history, { id: createId(), role: 'assistant', content: reply }]);
 		} catch (requestError) {
 			console.error('Chat request failed', requestError);
-			setError("Couldn't get a reply. Check your connection and try again.");
+			setError(requestError instanceof Error ? requestError.message : "Couldn't get a reply. Check your connection and try again.");
 		} finally {
 			setIsSending(false);
 		}
@@ -183,7 +184,7 @@ const ChatPanel = ({ selectedClearing, sensitivityDb, suggestions = [], title = 
 				<label htmlFor='chat-input' className='sr-only'>
 					Message
 				</label>
-				<textarea id='chat-input' ref={inputRef} rows={1} value={input} onChange={handleInputChange} onKeyDown={handleKeyDown} placeholder={placeholder} className='min-h-[44px] min-w-0 flex-1 resize-none rounded-xl border border-edge bg-paper px-3 py-2.5 text-[15px] leading-normal placeholder:text-muted' />
+				<textarea id='chat-input' ref={inputRef} rows={1} maxLength={4000} value={input} onChange={handleInputChange} onKeyDown={handleKeyDown} placeholder={placeholder} className='min-h-[44px] min-w-0 flex-1 resize-none rounded-xl border border-edge bg-paper px-3 py-2.5 text-[15px] leading-normal placeholder:text-muted' />
 				<button type='submit' disabled={!canSend} aria-label='Send message' className='inline-flex size-11 shrink-0 items-center justify-center rounded bg-ink text-panel hover:bg-ink/90 disabled:opacity-40'>
 					<ArrowUp className='size-5' aria-hidden='true' />
 				</button>

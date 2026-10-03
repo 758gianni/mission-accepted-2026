@@ -1,0 +1,14 @@
+{
+  "name": "mission-accepted-chat-api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --env-file=.env.local --watch server.js",
+    "start": "node --env-file=.env.local server.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "openai": "^6.0.0"
+  }
+}

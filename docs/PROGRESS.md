@@ -1,6 +1,6 @@
 # Goal and progress
 
-Updated: 2026-10-03. Lead-owned living status; update after meaningful worker results, reviews, integration, dataset acquisition and validation. Record evidence and blockers rather than speculative completion percentages.
+Updated: 2026-10-03, after offline result recovery. Lead-owned living status; update after meaningful worker results, reviews, integration, dataset acquisition and validation. Record evidence and blockers rather than speculative completion percentages.
 
 ## Goal
 
@@ -15,7 +15,7 @@ Deliver a scientifically defensible, locally runnable RADARSAT-2 Tropical Forest
 | Reproducible acquisition | Implemented branch, security review pending | CLI wrapper checkpoint babc4bd8; signed-URL handling, multi-scene selection, limits and credential-boundary fixes remain outstanding. No agent authentication. |
 | Product inventory | Implemented branch, fixes/review pending | Checkpoint 7c0faf33; placeholder georeferencing, JSON nodata, rotated spacing and real XML fields under review. |
 | Prepared-pair change detection | Implemented branch, final review pending | Checkpoint b8d9059d; 47 lead-run tests passed on synthetic prepared rasters. This does not demonstrate raw-data preprocessing or real changes. |
-| Read-only API | Implemented branch, fixes/review pending | Checkpoint 87cfacb5; 139 lead-run tests passed; temporal/metric consistency fixes pending. |
+| Read-only API | Updated branch, independent review pending | Recovered published a3f94b3; worker retained evidence of 184 passing tests after consistency fixes. Lead re-verification and PNG integrity fix pending. |
 | Integrated real-data vertical slice | Not achieved | No real pixels/result bundle locally; no implementation branches merged yet. |
 | Dashboard integration and preselected event | Pending | Frontend owned by teammates; backend contract and demo-runbook workers assigned. No validated real example region. |
 | Live-demo readiness | Not achieved | Requires real-data vertical slice, scientific checks, reviewed integration and deterministic dashboard rehearsal. |
@@ -27,6 +27,10 @@ Twelve additional offline work packages cover end-to-end tests, registration dia
 See [OFFLINE-HANDOFF.md](OFFLINE-HANDOFF.md) for worker IDs, checkpoints, review gates and recovery context. Recovery handoff is published on forestwatch/offline-recovery-20261003; main and teammates' frontend are unchanged by that branch.
 
 ## Next actions and blockers
+
+Recovered commits are published for integration tests (49ac9ff9), registration diagnostics (93250adf), catalog selector (16076a68), dashboard contract (62952f75) and demo runbook (8755df1f). Six independent review workers are assigned these changes and the final API checkpoint. No approval or integration is implied by publication.
+
+The actual producer-to-API integration tests exposed a blocker: relative_orbit is serialized as float by the producer but must be an integer in the API. The producer owner has a regression/fix task. Additional bounded follow-ups cover exact minimum-area filtering, raster-content identity, rotated-grid rejection and interrupted publication preserving the previous bundle. The API owner is checking truncated PNG acceptance. Synthetic fixture failures are useful evidence, not a demonstrated real land-change result.
 
 1. Recover current-run reports and exact published heads; preserve artifacts, independently review new implementations and remaining fixes.
 2. Make acquisition credential handling reviewable and safe, then give the user the exact interactive authentication/download command. Authentication requires the user; unrelated work continues.

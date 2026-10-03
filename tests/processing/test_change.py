@@ -843,6 +843,94 @@ def test_rejects_wrong_scene_count_dates_and_registration(tmp_path):
         run_change_detection(str(tmp_path / "missing.json"), str(tmp_path / "out9"), 2.0, 0.0)
 
 
+def test_relative_orbit_integer_stays_an_integer_in_the_bundle(tmp_path):
+    # integration blocker at b8d9059d: a manifest integer orbit was serialised as a float
+    # (98.0), which the API rejects with error/503
+    before_path = write_raster(tmp_path / "b.tif", stable_grid())
+    after_path = write_raster(tmp_path / "a.tif", change_grid())
+    manifest = write_manifest(
+        tmp_path / "m.json",
+        scene(before_path, scene_id="A", acquired_at=BASELINE_ACQUIRED, relative_orbit=98),
+        scene(after_path, scene_id="B", acquired_at=FOLLOWUP_ACQUIRED, relative_orbit=98),
+    )
+    out_dir = str(tmp_path / "out")
+    analysis = run_change_detection(manifest, out_dir, 2.0, 0.0)
+    for entry in analysis["scenes"]:
+        assert entry["relative_orbit"] == 98
+        assert isinstance(entry["relative_orbit"], int)
+        assert not isinstance(entry["relative_orbit"], bool)
+    with open(os.path.join(out_dir, "analysis.json"), "r", encoding="utf-8") as handle:
+        text = handle.read()
+    # the serialised form must be a JSON integer, not 98.0
+    assert '"relative_orbit": 98' in text
+    assert '"relative_orbit": 98.0' not in text
+    reparsed = json.loads(text)
+    for entry in reparsed["scenes"]:
+        assert isinstance(entry["relative_orbit"], int)
+
+
+def test_relative_orbit_null_stays_null(tmp_path):
+    before_path = write_raster(tmp_path / "b.tif", stable_grid())
+    after_path = write_raster(tmp_path / "a.tif", change_grid())
+    manifest = write_manifest(
+        tmp_path / "m.json",
+        scene(before_path, scene_id="A", acquired_at=BASELINE_ACQUIRED, relative_orbit=None),
+        scene(after_path, scene_id="B", acquired_at=FOLLOWUP_ACQUIRED, relative_orbit=None),
+    )
+    out_dir = str(tmp_path / "out")
+    analysis = run_change_detection(manifest, out_dir, 2.0, 0.0)
+    for entry in analysis["scenes"]:
+        assert entry["relative_orbit"] is None
+    with open(os.path.join(out_dir, "analysis.json"), "r", encoding="utf-8") as handle:
+        text = handle.read()
+    assert '"relative_orbit": null' in text
+    assert "NaN" not in text
+
+
+def test_relative_orbit_fractional_values_are_rejected_not_rounded(tmp_path):
+    before_path = write_raster(tmp_path / "b.tif", stable_grid())
+    after_path = write_raster(tmp_path / "a.tif", change_grid())
+    baseline = scene(before_path, scene_id="A", acquired_at=BASELINE_ACQUIRED, relative_orbit=98)
+    for value in (98.5, 98.1, -98.25):
+        after = scene(after_path, scene_id="B", acquired_at=FOLLOWUP_ACQUIRED, relative_orbit=value)
+        manifest = write_manifest(tmp_path / f"m-{value}.json", baseline, after)
+        with pytest.raises(ChangeError, match="relative_orbit must be a whole number"):
+            run_change_detection(manifest, str(tmp_path / f"out-{value}"), 2.0, 0.0)
+
+
+def test_relative_orbit_integral_float_is_normalised_to_an_integer(tmp_path):
+    before_path = write_raster(tmp_path / "b.tif", stable_grid())
+    after_path = write_raster(tmp_path / "a.tif", change_grid())
+    manifest = write_manifest(
+        tmp_path / "m.json",
+        scene(before_path, scene_id="A", acquired_at=BASELINE_ACQUIRED, relative_orbit=98.0),
+        scene(after_path, scene_id="B", acquired_at=FOLLOWUP_ACQUIRED, relative_orbit=98.0),
+    )
+    out_dir = str(tmp_path / "out")
+    analysis = run_change_detection(manifest, out_dir, 2.0, 0.0)
+    for entry in analysis["scenes"]:
+        assert entry["relative_orbit"] == 98
+        assert isinstance(entry["relative_orbit"], int)
+    # 98 and 98.0 describe the same orbit, so the pair stays compatible
+    mixed = write_manifest(
+        tmp_path / "mixed.json",
+        scene(before_path, scene_id="A", acquired_at=BASELINE_ACQUIRED, relative_orbit=98),
+        scene(after_path, scene_id="B", acquired_at=FOLLOWUP_ACQUIRED, relative_orbit=98.0),
+    )
+    assert run_change_detection(mixed, str(tmp_path / "mixed-out"), 2.0, 0.0)["metrics"]["region_count"] == 1
+
+
+def test_relative_orbit_non_finite_and_boolean_are_rejected(tmp_path):
+    before_path = write_raster(tmp_path / "b.tif", stable_grid())
+    after_path = write_raster(tmp_path / "a.tif", change_grid())
+    baseline = scene(before_path, scene_id="A", acquired_at=BASELINE_ACQUIRED, relative_orbit=98)
+    for value in ("98", True, float("nan"), float("inf"), [98]):
+        after = scene(after_path, scene_id="B", acquired_at=FOLLOWUP_ACQUIRED, relative_orbit=value)
+        manifest = write_manifest(tmp_path / "m.json", baseline, after)
+        with pytest.raises(ChangeError, match="relative_orbit must be a whole number or null"):
+            run_change_detection(manifest, str(tmp_path / "out-bad"), 2.0, 0.0)
+
+
 def test_rejects_nonpositive_or_nonfinite_parameters(pair):
     for threshold, pattern in ((0.0, "strictly positive"), (-1.0, "strictly positive"), (float("nan"), "finite"), (float("inf"), "finite")):
         with pytest.raises(ChangeError, match=pattern):

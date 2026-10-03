@@ -121,6 +121,24 @@ def _nonempty_str(value: Any) -> bool:
     return isinstance(value, str) and value.strip() != ""
 
 
+def _coerce_relative_orbit(value: Any, index: int) -> Optional[int]:
+    """Validate a relative orbit and keep it an integer; fractional values are rejected, not rounded."""
+    if value is None:
+        return None
+    field = f"manifest.scenes[{index}].relative_orbit"
+    number = _finite(value)
+    _require(
+        number is not None,
+        f"{field} must be a whole number or null; got {value!r}",
+    )
+    _require(
+        number.is_integer(),
+        f"{field} must be a whole number; fractional values are rejected rather than "
+        f"rounded, got {value!r}",
+    )
+    return int(number)
+
+
 def parse_utc(value: Any, field: str) -> datetime:
     """Parse a strict ISO-8601 UTC timestamp (``Z`` or ``+00:00``)."""
     _require(_nonempty_str(value), f"{field} must be a non-empty ISO-8601 UTC string")
@@ -207,11 +225,7 @@ def validate_manifest(manifest: Dict[str, Any], manifest_path: str) -> List[Dict
                 f"manifest.scenes[{index}].{key} must be a non-empty string",
             )
         acquired_at = parse_utc(scene["acquired_at"], f"manifest.scenes[{index}].acquired_at")
-        relative_orbit = scene["relative_orbit"]
-        _require(
-            relative_orbit is None or _finite(relative_orbit) is not None,
-            f"manifest.scenes[{index}].relative_orbit must be a finite number or null",
-        )
+        relative_orbit = _coerce_relative_orbit(scene["relative_orbit"], index)
         _require(
             scene["source_collection"] == REQUIRED_SOURCE_COLLECTION,
             f"manifest.scenes[{index}].source_collection must be "
@@ -272,7 +286,8 @@ def validate_manifest(manifest: Dict[str, Any], manifest_path: str) -> List[Dict
                 "polarization": scene["polarization"],
                 "beam_mode": scene["beam_mode"],
                 "orbit_direction": scene["orbit_direction"],
-                "relative_orbit": None if relative_orbit is None else float(relative_orbit),
+                # kept as an int (never a float): the API contract requires an integer here
+                "relative_orbit": relative_orbit,
                 "product_type": scene["product_type"],
                 "source_collection": scene["source_collection"],
                 "catalog_url": scene["catalog_url"],

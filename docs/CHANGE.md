@@ -48,7 +48,7 @@ requirements): `numpy`, `scipy`, `rasterio`, `shapely`, `pyproj`, `Pillow`,
       "polarization": "C",
       "beam_mode": "S",
       "orbit_direction": "DESCENDING",
-      "relative_orbit": 12345,
+      "relative_orbit": 98,
       "product_type": "SLC",
       "source_collection": "Radarsat-2_Tropical_Forest_Products",
       "catalog_url": "https://...",
@@ -80,7 +80,7 @@ Rules enforced before any pixel is read:
 | `scenes` | exactly 2, ascending by `acquired_at`, distinct UTC dates, unique ids |
 | `acquired_at` | ISO-8601 with an explicit UTC offset (`Z` or `+00:00`) |
 | `source_collection` | must be `Radarsat-2_Tropical_Forest_Products` |
-| `relative_orbit` | finite number or `null` |
+| `relative_orbit` | whole number or `null`; an integral float such as `98.0` is accepted and normalised to `98`, while fractional values such as `98.5` are **rejected rather than rounded** |
 | `radiometry.quantity` | `sigma0` or `gamma0` |
 | `radiometry.representation` | must be `linear_power`; `amplitude` and dB are rejected |
 | `radiometry.calibration` / `geocoding` | must be `verified` |
@@ -261,7 +261,7 @@ no bundle and no staging directory behind; consumers that require
   "scenes": [
     {
       "id": "...", "acquired_at": "2026-03-04T10:15:00Z", "polarization": "C",
-      "beam_mode": "S", "orbit_direction": "DESCENDING", "relative_orbit": 12345,
+      "beam_mode": "S", "orbit_direction": "DESCENDING", "relative_orbit": 98,
       "product_type": "SLC", "source_collection": "Radarsat-2_Tropical_Forest_Products",
       "catalog_url": "https://..."
     }
@@ -309,6 +309,11 @@ no bundle and no staging directory behind; consumers that require
 inside `observation_interval`, including long before `detected_at`; two dates
 cannot bound it any tighter. The region `explanation` says so explicitly, and
 `analysis.limitations` repeats it.
+
+`relative_orbit` is emitted as a JSON **integer** when it is known and `null` when
+it is not: the API requires an integer there, so an integer manifest value must not
+drift to a float through the pipeline, and fractional orbits are refused at
+manifest validation instead of being quietly rounded.
 
 `change_db` (signed median dB) and `magnitude_db` (median **absolute** dB) are
 two distinct metrics, both valid. They coincide only for single-sign regions: a
@@ -408,7 +413,10 @@ filtering at several thresholds; rejection of unverified provenance, dB and
 amplitude rasters, complex rasters, missing CRS, degenerate transforms,
 incompatible pairs, wrong scene counts, duplicate dates, unsorted scenes, failed
 registration, bad schema versions, wrong source collections, non-overlapping
-footprints, and nonpositive/nonfinite parameters; finite-only numeric output;
+footprints, and nonpositive/nonfinite parameters; `relative_orbit` serialisation
+(a manifest `98` stays JSON integer `98` and never `98.0`, `null` stays `null`,
+`98.0` normalises to `98`, and fractional values are rejected rather than
+rounded); finite-only numeric output;
 real WGS84 preview bounds shared by all three PNGs and equal to `analysis.bbox`; a
 known global +3.0103 dB shift over the whole scene, proving the pooled stretch
 keeps it visible (before maps to the dark end, after to the bright end) and that

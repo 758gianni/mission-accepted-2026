@@ -20,3 +20,7 @@ Thumbs.db
 # JavaScript dependencies and build output
 node_modules/
 dist/
+
+# Python bytecode
+__pycache__/
+*.py[cod]

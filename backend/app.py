@@ -229,15 +229,23 @@ def _guard(current: BundleSnapshot) -> Response | None:
 
 
 def _read_png(bundle_dir: Path, filename: str) -> bytes:
-    from .validation import PNG_MAGIC
+    """Containment and signature guard on the hot read path.
+
+    Full integrity is established when the bundle is validated, and the
+    snapshot is revalidated whenever a declared file changes, so this only
+    re-checks the cheap invariants and the size bound before handing bytes back.
+    """
+    from .pngcheck import MAX_IMAGE_BYTES, PNG_SIGNATURE
 
     root = Path(bundle_dir).resolve()
     candidate = root / filename
     if candidate.parent != root or candidate.is_symlink():
         raise OSError("imagery path is not a contained regular file")
     with candidate.open("rb") as handle:
-        data = handle.read()
-    if not data.startswith(PNG_MAGIC):
+        data = handle.read(MAX_IMAGE_BYTES + 1)
+    if len(data) > MAX_IMAGE_BYTES:
+        raise OSError("imagery file is larger than the permitted preview size")
+    if not data.startswith(PNG_SIGNATURE):
         raise OSError("imagery file is not a PNG")
     return data
 

@@ -340,10 +340,32 @@ adjusted; every served number is the one the analysis declared.
 - `path` must be exactly `<key>.png` — a plain file name, no separators, no
   `..`, no leading dot.
 - The resolved path must sit directly in the bundle directory, must not be a
-  symlink (the bundle directory itself must not be a symlink either), must be a
-  regular file, and must begin with the PNG signature.
-- The same containment and PNG checks run again on every read, so a file swapped
-  for a symlink after validation is refused with `503`.
+  symlink (the bundle directory itself must not be a symlink either) and must be
+  a regular file.
+- Every declared preview is **fully decoded and integrity checked**, not merely
+  sniffed. A file that starts with the PNG signature is not enough: a truncated
+  43-byte file and a signature followed by zeros both pass a signature check
+  while no decoder can read them. Each preview must therefore survive all of:
+  the signature; the chunk framing; a correct CRC for **every** chunk; exactly
+  one `IHDR`, first, with sane width, height, colour type, bit depth and
+  compression/filter/interlace methods; non-empty, consecutive `IDAT` chunks;
+  a `PLTE` when the image is palette-based; a terminating `IEND` with nothing
+  after it; a pixel stream that inflates cleanly to *exactly* the byte count
+  implied by the declared geometry (Adam7 arithmetic for interlaced images);
+  and, when Pillow happens to be importable, a successful decode there too.
+- Sizes are bounded, so a broken or hostile file cannot make the service
+  allocate without end: at most 32 MiB per preview, 8 MiB per chunk, 128 MiB of
+  decompressed pixel data and 100000 per dimension. Anything larger is refused.
+- Pillow is an optional extra cross-check. It is never required: the checks are
+  implemented against the standard library, so no dependency was added.
+- The per-read hot path re-checks containment, the size bound and the signature;
+  full integrity is established when the bundle is validated, and the snapshot
+  is revalidated whenever a declared file changes. So a file swapped for a
+  corrupt one, or for a symlink, after validation is refused with `503`.
+- A bundle missing or failing a required preview is rejected **whole**. Serving
+  the two healthy previews alongside a broken third was considered and rejected:
+  a partially trustworthy bundle is harder for a reader to reason about than a
+  clean "no analysis yet" or "bundle is broken" state.
 
 ## Text handling: neutral JSON, not sanitisation
 

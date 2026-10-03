@@ -24,13 +24,13 @@ from datetime import datetime
 from urllib.parse import urlsplit
 from typing import Any, Mapping
 
+from .pngcheck import PngRejected, verify_png
+
 ANALYSIS_FILENAME = "analysis.json"
 REGIONS_FILENAME = "regions.geojson"
 
 SCHEMA_VERSION = 1
 IMAGERY_KEYS: tuple[str, ...] = ("before", "after", "change")
-PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
-
 QUANTITIES = frozenset({"sigma0", "gamma0"})
 UNITS = "dB"
 CHANGE_DEFINITION = "10*log10(after/before)"
@@ -738,13 +738,13 @@ def resolve_imagery(
         if not stat_module.S_ISREG(stat.st_mode):
             _fail(label, "declared image must be a regular file")
         try:
-            with candidate.open("rb") as handle:
-                if handle.read(len(PNG_MAGIC)) != PNG_MAGIC:
-                    _fail(label, "declared image must be a PNG file")
-        except BundleValidationError:
-            raise
+            payload = candidate.read_bytes()
         except OSError:
             _fail(label, "declared image file could not be read")
+        try:
+            verify_png(payload)
+        except PngRejected:
+            _fail(label, "declared image is not a complete, decodable PNG")
         resolved[key] = ImageryEntry(
             key=key,
             filename=path,

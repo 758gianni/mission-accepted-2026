@@ -26,12 +26,32 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from backend.app import create_app
+from backend.pngcheck import PNG_SIGNATURE
 
-PNG_1X1_GRAY = bytes.fromhex(
-    "89504e470d0a1a0a0000000d49484452000000010000000108020000"
-    "00807753de0000000c4944415408d763f8ffff3f0005fe02fea7e1e9e6"
-    "0000000049454e44ae426082"
-)
+def _build_png(width: int, height: int) -> bytes:
+    """Build a small, genuinely valid greyscale PNG deterministically."""
+
+    def chunk(tag: bytes, payload: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(payload))
+            + tag
+            + payload
+            + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
+        )
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0)
+    raw = b"".join(
+        b"\x00" + bytes([(x + y) % 256 for x in range(width)]) for y in range(height)
+    )
+    return (
+        PNG_SIGNATURE
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", zlib.compress(raw))
+        + chunk(b"IEND", b"")
+    )
+
+
+PNG_1X1_GRAY = _build_png(1, 1)
 
 SCHEMA_VERSION = 1
 
@@ -298,23 +318,7 @@ def png_chunk_count(data: bytes) -> int:
 
 def reencode_png(width: int = 2, height: int = 2) -> bytes:
     """Build a small valid PNG deterministically (test-only synthetic raster)."""
-
-    def chunk(tag: bytes, payload: bytes) -> bytes:
-        return (
-            struct.pack(">I", len(payload))
-            + tag
-            + payload
-            + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
-        )
-
-    ihdr = struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0)
-    raw = b"".join(b"\x00" + bytes([(x + y) % 256 for x in range(width)]) for y in range(height))
-    return (
-        b"\x89PNG\r\n\x1a\n"
-        + chunk(b"IHDR", ihdr)
-        + chunk(b"IDAT", zlib.compress(raw))
-        + chunk(b"IEND", b"")
-    )
+    return _build_png(width, height)
 
 
 # ---------------------------------------------------------------------------

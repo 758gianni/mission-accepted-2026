@@ -401,3 +401,145 @@ def test_error_message_names_the_image_not_the_bytes(tmp_path: Path) -> None:
     assert "crc32" not in message
     assert "\x00" not in message
     assert str(tmp_path) not in message
+
+
+# ---------------------------------------------------------------------------
+# decoder bound: total pixel count
+# ---------------------------------------------------------------------------
+
+
+def _bit_png(width: int, height: int, idat: bytes | None = None) -> bytes:
+    """A 1-bit greyscale PNG. Small ones are real; big ones only claim to be."""
+    packed = height * (1 + (width + 7) // 8)  # ceil, matching the spec
+    payload = zlib.compress(bytes(packed)) if idat is None else idat
+    return (
+        pngcheck.PNG_SIGNATURE
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 1, 0, 0, 0, 0))
+        + chunk(b"IDAT", payload)
+        + chunk(b"IEND", b"")
+    )
+
+
+def test_total_pixel_cap_exists() -> None:
+    assert 0 < pngcheck.MAX_IMAGE_PIXELS < 200_000_000
+    # A genuine map preview stays comfortably inside the cap.
+    assert 1024 * 1024 < pngcheck.MAX_IMAGE_PIXELS
+
+
+def test_pixel_cap_rejects_before_any_allocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pngcheck, "MAX_IMAGE_PIXELS", 1_000_000)
+    payload = _bit_png(2000, 1000)  # 2,000,000 pixels
+    with pytest.raises(pngcheck.PngRejected):
+        pngcheck.verify_png_structure(payload)
+
+
+def test_pixel_cap_boundary_is_inclusive(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(pngcheck, "MAX_IMAGE_PIXELS", 1_000_000)
+    # Exactly at the cap: allowed through the cap, then rejected on its own
+    # merits by the decoder/structure rules rather than by the cap.
+    assert pngcheck.verify_png_structure(_bit_png(500, 2000)).width == 500
+
+
+def test_huge_dimensions_never_reach_the_decoder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The lead's reproduction: 20k x 10k 1-bit, a 24 kB file, 200M pixels."""
+    import PIL.Image
+
+    def exploding_open(*args: object, **kwargs: object) -> object:
+        raise AssertionError("decoder must not be reached for an over-cap image")
+
+    monkeypatch.setattr(PIL.Image, "open", exploding_open)
+    payload = _bit_png(20000, 10000)
+    assert len(payload) < 100_000, "the compressed payload should stay tiny"
+    with pytest.raises(pngcheck.PngRejected):
+        pngcheck.verify_png(payload)
+
+
+def test_bomb_exception_is_normalised_not_raised(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A decoder that blows up must become a controlled rejection."""
+    import PIL.Image
+
+    def bomb(*args: object, **kwargs: object) -> object:
+        raise PIL.Image.DecompressionBombError("too many pixels")
+
+    monkeypatch.setattr(PIL.Image, "open", bomb)
+    with pytest.raises(pngcheck.PngRejected):
+        pngcheck.verify_png(reencode_png(2, 2))
+
+
+def test_decoder_warning_is_treated_as_a_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import PIL.Image
+
+    class FakeImage:
+        def __enter__(self) -> "FakeImage":
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+        def load(self) -> None:
+            return None
+
+    def warning_open(*args: object, **kwargs: object) -> FakeImage:
+        import warnings
+
+        warnings.warn(
+            "DecompressionBombWarning", PIL.Image.DecompressionBombWarning, stacklevel=1
+        )
+        return FakeImage()
+
+    monkeypatch.setattr(PIL.Image, "open", warning_open)
+    with pytest.raises(pngcheck.PngRejected):
+        pngcheck.verify_png(reencode_png(2, 2))
+
+
+def test_decoder_error_without_a_bomb_class_is_normalised(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nothing a decoder raises may escape as an uncaught exception."""
+    import PIL.Image
+
+    class Boom(Exception):
+        pass
+
+    def boom(*args: object, **kwargs: object) -> object:
+        raise Boom("something unexpected")
+
+    monkeypatch.setattr(PIL.Image, "open", boom)
+    with pytest.raises(pngcheck.PngRejected):
+        pngcheck.verify_png(reencode_png(2, 2))
+
+
+def test_over_cap_preview_makes_the_bundle_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(pngcheck, "MAX_IMAGE_PIXELS", 1_000_000)
+    bundle = write_bundle(tmp_path)
+    for key in ("before", "after", "change"):
+        (bundle / f"{key}.png").write_bytes(_bit_png(2000, 1000))
+    client = TestClient(create_app(bundle_dir=bundle), raise_server_exceptions=False)
+    assert client.get("/api/status").json()["state"] == "error"
+    for key in ("before", "after", "change"):
+        assert client.get(f"/api/imagery/{key}").status_code == 503
+    assert client.get("/health").status_code == 200
+
+
+@pytest.mark.parametrize("size", [(512, 512), (1024, 1024), (2048, 1024)])
+def test_realistic_preview_sizes_are_unaffected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, size: tuple[int, int]
+) -> None:
+    """1024px-style previews stay well inside the default cap."""
+    bundle = write_bundle(tmp_path)
+    for key in ("before", "after", "change"):
+        (bundle / f"{key}.png").write_bytes(reencode_png(*size))
+    client = TestClient(create_app(bundle_dir=bundle))
+    assert client.get("/api/status").json()["state"] == "ready"
+    for key in ("before", "after", "change"):
+        assert client.get(f"/api/imagery/{key}").status_code == 200

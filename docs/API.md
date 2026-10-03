@@ -371,11 +371,28 @@ adjusted; every served number is the one the analysis declared.
   implied by the declared geometry (Adam7 arithmetic for interlaced images);
   and, when Pillow happens to be importable, a successful decode there too.
 - Sizes are bounded, so a broken or hostile file cannot make the service
-  allocate without end: at most 32 MiB per preview, 8 MiB per chunk, 128 MiB of
-  decompressed pixel data and 100000 per dimension. Anything larger is refused.
-  The file size is checked from its `stat` **before** the bytes are read, and
-  the read itself is capped one byte past the limit, so an oversize preview is
-  never materialised in memory.
+  allocate without end:
+
+  | Bound | Limit | Checked |
+  | --- | --- | --- |
+  | Preview file size | 32 MiB | from `lstat`, before the bytes are read |
+  | Single chunk | 8 MiB | while walking the chunk stream |
+  | Total pixels (`width * height`) | 64 MP (about 8000x8000) | from the IHDR header, before inflating or decoding |
+  | Decompressed pixel bytes | 128 MiB | from the declared geometry, before inflating |
+  | Width or height | 100000 | from the IHDR header |
+
+  The file size is read one byte past the limit rather than whole, so an
+  oversize preview is never materialised in memory.
+- The **total pixel count** needs its own cap because the packed-byte budget is
+  not sufficient on its own: a 1-bit image packs eight pixels into a byte, so
+  200 megapixels is only about 25 MB of packed scanlines and passes a byte budget
+  while still demanding an enormous allocation from any decoder. A 24 kB file
+  of that shape is refused from its header, before any inflate or decode. An
+  ordinary map preview near 1024px (about 1 MP) has generous headroom.
+- Decoder failures are always normalised. `DecompressionBombError` and
+  `DecompressionBombWarning` are both turned into a controlled rejection, as is
+  any other exception the decoder raises, so a hostile or broken image always
+  produces a reported `error` / `503` bundle and never an uncaught `500`.
 - Pillow is an optional extra cross-check. It is never required: the checks are
   implemented against the standard library, so no dependency was added.
 - The per-read hot path re-checks containment, the size bound and the signature;

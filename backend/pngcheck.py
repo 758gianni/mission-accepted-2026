@@ -30,6 +30,17 @@ MAX_CHUNK_BYTES = 8 * 1024 * 1024
 #: Refuse a decompressed pixel stream larger than this.
 MAX_PIXEL_BYTES = 128 * 1024 * 1024
 
+#: Refuse an image with more than this many pixels in total.
+#:
+#: The packed-byte limit above is not a sufficient bound: a 1-bit image packs
+#: eight pixels into a byte, so 200 megapixels is only 25 MB of packed
+#: scanlines and passes a byte budget while still demanding a very large
+#: allocation from any decoder. This cap is on ``width * height`` and is
+#: checked from the header, before anything is inflated or decoded. 64 MP is
+#: roughly 8000x8000, so an ordinary map preview around 1024px (1 MP) has
+#: generous headroom while absurd geometries are refused cheaply.
+MAX_IMAGE_PIXELS = 64_000_000
+
 #: Refuse an absurd width or height.
 MAX_DIMENSION = 100_000
 
@@ -247,6 +258,12 @@ def verify_png_structure(data: bytes) -> PngInfo:
     if not idat:
         _reject("declared image contains no pixel data")
 
+    if width * height > MAX_IMAGE_PIXELS:
+        _reject(
+            "declared image has more pixels than the permitted preview size "
+            f"({MAX_IMAGE_PIXELS})"
+        )
+
     bits_per_pixel = bit_depth * _CHANNELS[colour_type]
     layout = _scanline_layout(width, height, bits_per_pixel, bool(interlace))
     expected = sum(rows * (1 + row_bytes) for rows, row_bytes in layout)
@@ -290,16 +307,26 @@ def decode_check(data: bytes) -> None:
     rather than optional: a bundle is only served when a real decoder has read
     every pixel.
     """
+    import warnings
+
     try:
         import io
 
-        from PIL import Image, UnidentifiedImageError
+        from PIL import Image
     except ImportError:
         _reject("no PNG decoder is available to verify the declared image")
     try:
-        with Image.open(io.BytesIO(data)) as image:
-            image.load()
-    except (UnidentifiedImageError, OSError, ValueError, SyntaxError):
+        with warnings.catch_warnings():
+            # Pillow signals a suspicious geometry by warning and an egregious
+            # one by raising. Both mean the same thing here, so both become a
+            # controlled rejection rather than a warning nobody reads.
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(io.BytesIO(data)) as image:
+                image.load()
+    except Exception:
+        # Deliberate backstop: a decode problem of any kind, including the
+        # exception classes Pillow raises for decompression bombs, must arrive
+        # as a reported invalid bundle and never as an uncaught error.
         _reject("declared image could not be decoded")
 
 
@@ -307,6 +334,7 @@ __all__ = [
     "MAX_CHUNK_BYTES",
     "MAX_DIMENSION",
     "MAX_IMAGE_BYTES",
+    "MAX_IMAGE_PIXELS",
     "MAX_PIXEL_BYTES",
     "PNG_SIGNATURE",
     "PngInfo",

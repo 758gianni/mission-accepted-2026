@@ -168,7 +168,7 @@ def _run_upstream(
     # The live password is scrubbed from output/logs/manifests wherever it lands.
     if password:
         register_secrets(password)
-    with isolated_eodms_environment(upstream), redaction_scope(download_dir):
+    with isolated_eodms_environment(upstream), redaction_scope(download_dir, upstream):
         for single_argv in argvs:
             command = upstream.cli.commands.get(single_argv[0])
             if command is None:
@@ -208,7 +208,7 @@ class _GuardedGroup(click.Group):
     def invoke(self, ctx):
         # Outermost redaction scope: covers the wrapper's own error rendering and
         # anything logged while the invocation unwinds, not just the upstream call.
-        with redaction_scope():
+        with redaction_scope(None, None):
             return super().invoke(ctx)
 
     def parse_args(self, ctx, args):

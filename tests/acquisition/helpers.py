@@ -38,23 +38,69 @@ def import_upstream():
     return eodms_cli
 
 
-def contains_secret(path, *needles: str) -> list[str]:
-    """Return ``"<needle> -> <file>"`` for every needle found under path."""
+#: Content scanning is deliberately bounded: a test must never walk an entire
+#: home directory, follow symlinks out of the tree, or materialise huge/binary
+#: files. Structural assertions (metadata snapshots) prove the rest.
+MAX_SCAN_BYTES = 2 * 1024 * 1024
+SKIP_SUFFIXES = frozenset(
+    {".so", ".pyc", ".pyo", ".o", ".a", ".dll", ".dylib", ".zip", ".gz", ".bz2",
+     ".xz", ".zst", ".tar", ".whl", ".png", ".jpg", ".jpeg", ".tif", ".tiff",
+     ".pdf", ".db", ".sqlite", ".bin", ".woff", ".woff2", ".ttf"}
+)
+
+
+def iter_scan_targets(path, *, max_files: int = 2000):
+    """Yield regular, non-symlink files under ``path`` with a hard file cap."""
     path = Path(path)
+    seen = 0
+    if path.is_symlink() or not path.exists():
+        return
+    if path.is_file():
+        yield path
+        return
+    for root, dirs, files in __import__("os").walk(path, followlinks=False):
+        dirs[:] = [d for d in dirs if not (Path(root) / d).is_symlink()]
+        for name in files:
+            candidate = Path(root) / name
+            if candidate.is_symlink() or not candidate.is_file():
+                continue
+            if candidate.suffix.lower() in SKIP_SUFFIXES:
+                continue
+            try:
+                if candidate.stat().st_size > MAX_SCAN_BYTES:
+                    continue
+            except OSError:
+                continue
+            seen += 1
+            if seen > max_files:
+                return
+            yield candidate
+
+
+def contains_secret(path, *needles: str) -> list[str]:
+    """Return ``"<needle> -> <file>"`` for every needle found under ``path``.
+
+    Bounded on purpose: symlinks are skipped, binary/large/known-extension files
+    are skipped, at most ``max_files`` files are read and each is read in chunks.
+    """
     hits: list[str] = []
-    if path.is_dir():
-        targets = [p for p in path.rglob("*") if p.is_file()]
-    elif path.is_file():
-        targets = [path]
-    else:
+    needles = [needle for needle in needles if needle]
+    if not needles:
         return hits
-    for target in targets:
+    for target in iter_scan_targets(path):
         try:
-            data = target.read_text(encoding="utf-8", errors="ignore")
+            with target.open("rb") as handle:
+                data = b""
+                while len(data) <= MAX_SCAN_BYTES:
+                    chunk = handle.read(65536)
+                    if not chunk:
+                        break
+                    data += chunk
         except OSError:
             continue
+        text = data.decode("utf-8", errors="ignore")
         for needle in needles:
-            if needle and needle in data:
+            if needle in text:
                 hits.append(f"{needle} -> {target}")
     return hits
 

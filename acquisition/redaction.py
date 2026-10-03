@@ -25,7 +25,6 @@ import logging
 import os
 import re
 import sys
-import tempfile
 import threading
 from contextlib import contextmanager
 from pathlib import Path
@@ -211,19 +210,30 @@ class _RedactingStream(io.TextIOBase):
         return getattr(self._wrapped, name)
 
 
-class _FileDescriptorRedirect:
-    """Capture a real fd (1/2) into a temp file, then emit it redacted.
+class _StreamingFdRedactor:
+    """Capture fd 1/2 through a pipe and emit it redacted, entirely in memory.
 
-    Replacing ``sys.stdout`` with a proxy is not viable: Click resolves and caches
-    its own text stream and would either bypass the proxy or rewrap the fd buffer.
-    Redirecting the descriptor itself is invisible to Click and to the upstream.
+    A spool file was previously used, which meant raw (unredacted) bytes existed
+    on disk for the duration of the invocation - unacceptable when a credential
+    or signed-URL token can be in that output and the process may be killed.
+
+    Secrets split across read chunks are handled by holding back the last
+    ``tail`` bytes (one less than the longest registered secret) so a token that
+    straddles a chunk boundary is still redacted before emission. Nothing is
+    written to disk and the buffer is bounded by ``max_buffer``.
     """
+
+    CHUNK = 65536
 
     def __init__(self, fd: int):
         self.fd = fd
-        self.saved_fd: int | None = None
-        self.temp = tempfile.TemporaryFile(mode="w+b")
-        self.stream = io.TextIOWrapper(self.temp, encoding="utf-8", errors="replace")
+        self.max_buffer = 1 << 20
+        self.pipe_read = -1
+        self.pipe_write = -1
+        self.saved_fd = -1
+        self.thread: threading.Thread | None = None
+        self._stop = threading.Event()
+        self._closed = False
 
     def __enter__(self):
         for stream in (sys.stdout, sys.stderr):
@@ -231,9 +241,54 @@ class _FileDescriptorRedirect:
                 stream.flush()
             except Exception:
                 pass
+        self.pipe_read, self.pipe_write = os.pipe()
+        os.set_inheritable(self.pipe_write, False)
         self.saved_fd = os.dup(self.fd)
-        os.dup2(self.temp.fileno(), self.fd)
+        os.dup2(self.pipe_write, self.fd)
+        os.close(self.pipe_write)
+        self.pipe_write = -1
+        self.thread = threading.Thread(
+            target=self._pump, name=f"eodms-redact-fd{self.fd}", daemon=True
+        )
+        self.thread.start()
         return self
+
+    def _pump(self) -> None:
+        buffer = b""
+        tail = max((len(secret) - 1 for secret in known_secrets()), default=0)
+        tail = max(tail, 512)
+        try:
+            while not self._stop.is_set():
+                try:
+                    chunk = os.read(self.pipe_read, self.CHUNK)
+                except (OSError, ValueError):
+                    break
+                if not chunk:
+                    break
+                buffer += chunk
+                if len(buffer) > self.max_buffer:  # bounded: flush the head
+                    emit, buffer = buffer[: len(buffer) - tail], buffer[len(buffer) - tail:]
+                    self._emit(emit)
+                    continue
+                if tail and len(buffer) > tail:
+                    emit, buffer = buffer[:-tail], buffer[-tail:]
+                    self._emit(emit)
+        finally:
+            if buffer:
+                self._emit(buffer)
+            try:
+                os.close(self.pipe_read)
+            except OSError:
+                pass
+
+    def _emit(self, data: bytes) -> None:
+        if not data or self.saved_fd < 0:
+            return
+        try:
+            text = data.decode("utf-8", errors="replace")
+            os.write(self.saved_fd, redact_text(text).encode("utf-8", errors="replace"))
+        except OSError:  # pragma: no cover - reader went away
+            pass
 
     def __exit__(self, *_exc):
         for stream in (sys.stdout, sys.stderr):
@@ -241,19 +296,20 @@ class _FileDescriptorRedirect:
                 stream.flush()
             except Exception:
                 pass
-        if self.saved_fd is not None:
-            os.dup2(self.saved_fd, self.fd)
-            os.close(self.saved_fd)
-            self.saved_fd = None
-        self.stream.flush()
-        self.stream.seek(0)
-        data = self.temp.read()
-        self.stream.close()
-        self.temp.close()
-        target = sys.__stdout__ if self.fd == 1 else sys.__stderr__
-        if data:
-            target.write(redact_text(data.decode("utf-8", errors="replace")))
-            target.flush()
+        # Closing the real fd unblocks the pump (EOF), but the saved fd must stay
+        # open until the pump has flushed, otherwise its output is lost.
+        try:
+            os.close(self.fd)
+        except OSError:
+            pass
+        os.dup2(self.saved_fd, self.fd)
+        if self.thread is not None:
+            try:
+                self.thread.join(timeout=5)
+            except RuntimeError:  # pragma: no cover
+                pass
+        os.close(self.saved_fd)
+        self.saved_fd = -1
         return False
 
 
@@ -299,9 +355,39 @@ def scrub_download_manifest(download_dir: Any) -> list[str]:
     return rewritten
 
 
+def sanitise_jsonl_rows(rows: Any) -> Any:
+    """Redact manifest records in memory, before any writer touches the disk."""
+    if isinstance(rows, list):
+        return [redact_value(row) for row in rows]
+    return redact_value(rows)
+
+
+def hook_manifest_writer(upstream: Any) -> Any:
+    """Wrap the genuine upstream JSONL writer so records are sanitised first.
+
+    Returns the undo callable. The genuine writer is still the one that writes
+    the file (same atomic temp-file + rename path); only the rows it receives are
+    redacted. Downloaded product bytes are written by other code paths and are
+    left untouched.
+    """
+    original = getattr(upstream, "_write_jsonl_rows_atomic", None)
+    if original is None:  # pragma: no cover - upstream always defines it
+        return lambda: None
+
+    def writing(sanitised_writer):
+        def wrapper(file_path, rows, *args, **kwargs):
+            return sanitised_writer(file_path, sanitise_jsonl_rows(rows), *args, **kwargs)
+
+        return wrapper
+
+    upstream._write_jsonl_rows_atomic = writing(original)
+    return lambda: setattr(upstream, "_write_jsonl_rows_atomic", original)
+
+
 @contextmanager
-def redaction_scope(download_dir: Any = None) -> Iterator[None]:
+def redaction_scope(download_dir: Any = None, upstream: Any = None) -> Iterator[None]:
     """Redact stdout/stderr, every log record, and the download manifest."""
+    unhook = hook_manifest_writer(upstream) if upstream is not None else (lambda: None)
     previous_factory = logging.getLogRecordFactory()
 
     def factory(*args, **kwargs):
@@ -321,7 +407,7 @@ def redaction_scope(download_dir: Any = None) -> Iterator[None]:
                 setattr(sys, attr, _RedactingStream(current))
                 continue
             try:
-                redirects.append(_FileDescriptorRedirect(fd).__enter__())
+                redirects.append(_StreamingFdRedactor(fd).__enter__())
             except OSError:  # pragma: no cover - fd not capturable
                 pass
         yield
@@ -334,6 +420,7 @@ def redaction_scope(download_dir: Any = None) -> Iterator[None]:
             for attr, stream in saved_objects.items():
                 setattr(sys, attr, stream)
             logging.setLogRecordFactory(previous_factory)
+            unhook()
 
 
 def assert_no_secret_material(text: Any, secrets: tuple[str, ...]) -> None:

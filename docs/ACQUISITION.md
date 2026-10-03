@@ -151,7 +151,7 @@ bash acquisition/bootstrap_eodms_cli.sh        # once
 .tools/eodms-cli/.venv/bin/python -m pytest tests/acquisition -q
 ```
 
-98 tests in seven files:
+104 tests in eight files:
 
 | File | What it proves |
 | --- | --- |
@@ -160,6 +160,7 @@ bash acquisition/bootstrap_eodms_cli.sh        # once
 | `test_credentials.py` | Prompt behaviour, argv/file/log leak scans with sentinel credentials, forbidden `configure`, memory-only AAA state, disabled file logging, untouched environment and untouched real `~/.eodms`, argument validation, exit-code propagation. |
 | `test_integrity.py` | Reproduces the tampering scenarios and proves fail-closed behaviour with no prompt and no import: a **modified tracked source file with HEAD unchanged**, an **untracked module injected** into the source tree, an **installed dependency file edited in place** (fails its pip `RECORD` hash), a manifest with the wrong pin, and a missing manifest. Also asserts the ordering integrity → import → prompt, and that the manifest is deterministic. |
 | `test_multi_uuid_click.py` | Real `click.Group.main` semantics: a genuine Click command installed as the pinned group's `download` shows that `SystemExit(0)` per invocation does not abort the loop (uuid `a,b` → two invocations, comma and repeated forms, dedupe), that a failing item **stops** the loop and propagates a non-zero exit, and that a single UUID still yields one invocation. |
+| `test_redaction_persistence.py` | Proves nothing unredacted is ever persisted: **during** the invocation no temp file contains the fd-1 sentinel (the old spool read back with `os.pread`), a token split across two `os.write` calls is still redacted, the genuine `_write_jsonl_rows_atomic` receives sanitised rows so the on-disk manifest is already clean while the scope is open, and a **killed child process** (`os._exit` inside the scope, after the write) leaves a manifest and a temp directory with no raw token. Product byte payloads are asserted untouched. |
 | `test_redaction.py` | Simulated signed-URL token sentinels through the genuine `requests` transport boundary (`HTTPAdapter.send` raises `HTTPError` carrying `?access_token=...`), with sockets still blocked: the sentinel is absent from stdout, stderr, the exception text and every log record; live tokens embedded in a URL **path** are scrubbed via the secret registry; and a `downloads.jsonl` manifest written during an invocation comes back redacted. |
 | `test_bootstrap.py` | Pinned revision, bootstrap invariants, the `.tools` ignore rule, credential-free help and integrity checks. |
 | `test_scenes.py` | Scene-selection parsing and upstream argument mapping, including the single-UUID-per-invocation rule. |
@@ -169,6 +170,14 @@ are **not** mocked: they must keep using the real `make_aaa`/`AAA_API` and real
 config resolution. `test_credentials.py` does stub the network-facing factories
 (`make_aaa`/`make_search`/`make_dds`) purely to drive the command bodies cheaply
 — that is a convenience layer, not a substitute for the boundary tests.
+
+Content scans in the tests are deliberately bounded (`helpers.contains_secret`):
+symlinks are skipped, binary/known-archive/large files are skipped, at most 2000
+files per root are read in chunks, and roots are limited to paths this code can
+write (test tmp dirs, the sandbox, the upstream source tree and its `log/`, and
+the real `~/.eodms`). The real home tree is proved unchanged *structurally*, by
+comparing a metadata snapshot (existence + mtime of every entry), so no unrelated
+user file is ever opened.
 
 Tests that need the pinned CLI are **skipped with an explicit message** if
 `acquisition/bootstrap_eodms_cli.sh` has not been run. No test performs an EODMS

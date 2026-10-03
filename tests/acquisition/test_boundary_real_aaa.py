@@ -120,27 +120,26 @@ def _home_tree() -> set[str]:
 
 
 def _secret_scan_roots(tmp_path: Path) -> list[Path]:
+    """Only paths this code can write - never the whole home directory.
+
+    The real home tree is covered structurally by ``_home_tree()`` (metadata
+    snapshot, no content read), so no unrelated user file is ever opened.
+    """
     home = Path.home()
-    roots = [tmp_path, REPO_ROOT_DATA, Path(wrapper_cli.UPSTREAM_SRC_DIR), home / ".eodms"]
-    roots += [p for p in (home / ".config", home / "Downloads", home / "Documents") if p.exists()]
-    roots.append(home)
-    return roots
+    return [
+        tmp_path,
+        REPO_ROOT_DATA,
+        Path(wrapper_cli.UPSTREAM_SRC_DIR),
+        Path(wrapper_cli.UPSTREAM_SRC_DIR) / "log",
+        home / ".eodms",
+        home / ".cache" / "eodms-wrapper-nonexistent-probe",
+    ]
 
 
 def _assert_no_secret_anywhere(roots, *secrets: str) -> None:
     for root in roots:
-        candidates = [root]
-        if root == Path.home():
-            candidates = [
-                p
-                for p in root.iterdir()
-                if p.is_dir() and p.name not in _TOOLING_DIRS
-            ] + [p for p in root.iterdir() if p.is_file()]
-        for candidate in candidates:
-            for secret in secrets:
-                assert not contains_secret(candidate, secret), (
-                    f"{secret!r} leaked into {candidate}"
-                )
+        for secret in secrets:
+            assert not contains_secret(root, secret), f"{secret!r} leaked into {root}"
 
 
 def _run(args, **kwargs):

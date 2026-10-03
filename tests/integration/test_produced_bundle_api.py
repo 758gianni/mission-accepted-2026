@@ -28,6 +28,7 @@ import copy
 import io
 import json
 import math
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -841,15 +842,23 @@ def test_bundle_dir_symlink_is_refused(tmp_path: Path, produced: dict[str, Path]
         assert leaked not in message
 
 
-def _republish_generation(bundle_dir: Path, workdir: Path, *, threshold_db: float) -> None:
-    """Run the producer again into an existing bundle directory: a new generation."""
-    workdir.mkdir(parents=True, exist_ok=True)
+def _publish_into(parent: Path, *, threshold_db: float, followup: np.ndarray | None = None) -> Path:
+    """Publish a generation the way the operator does, and return its directory.
+
+    The producer publishes atomically into ``<parent>/current``: a finished bundle
+    is renamed into ``.<root>.gen-<analysis_id>`` and the relative pointer at
+    ``current`` is swapped. A second run through the same pointer yields the next
+    generation and retains the previous one.
+    """
+    parent.mkdir(parents=True, exist_ok=True)
     manifest = _write_manifest(
-        workdir / "manifest.json",
-        _write_raster(workdir / "before.tif", _stable_grid()),
-        _write_raster(workdir / "after.tif", _followup_grid()),
+        parent / "manifest.json",
+        _write_raster(parent / "before.tif", _stable_grid()),
+        _write_raster(parent / "after.tif", _followup_grid() if followup is None else followup),
     )
-    run_change_detection(manifest, str(bundle_dir), threshold_db, 0.0)
+    root = parent / "current"
+    run_change_detection(manifest, str(root), threshold_db, 0.0)
+    return root.resolve()
 
 
 # --------------------------------------------------------------------------- #
@@ -857,18 +866,25 @@ def _republish_generation(bundle_dir: Path, workdir: Path, *, threshold_db: floa
 # --------------------------------------------------------------------------- #
 def test_superseded_generation_preview_is_refused(tmp_path: Path, produced: dict[str, Path]) -> None:
     """A client holding the previous analysis id must not be served the new images."""
-    bundle_dir = _bundle_copy(tmp_path / "gen", produced["changed"])
-    client = _client(bundle_dir)
+    published = tmp_path / "published"
+    first_generation = _publish_into(published, threshold_db=THRESHOLD_DB)
+    root = published / "current"
+
+    client = _client(root)
     first = _get_json(client, "/api/analysis")
     stale = _assert_declared_urls(first)
-    stale_bytes = {key: (bundle_dir / f"{key}.png").read_bytes() for key in IMAGERY_KEYS}
+    stale_bytes = {key: (first_generation / f"{key}.png").read_bytes() for key in IMAGERY_KEYS}
 
-    _republish_generation(bundle_dir, tmp_path / "work", threshold_db=THRESHOLD_DB + 0.5)
+    # a genuinely different pair, so the two generations cannot share preview bytes
+    second_generation = _publish_into(
+        published, threshold_db=THRESHOLD_DB + 0.5, followup=_followup_grid(with_tiny=True)
+    )
+    assert second_generation != first_generation
 
     second = _get_json(client, "/api/analysis")
     assert second["analysis_id"] != first["analysis_id"], "a new run must publish a new analysis id"
     current = _assert_declared_urls(second)
-    fresh_bytes = {key: (bundle_dir / f"{key}.png").read_bytes() for key in IMAGERY_KEYS}
+    fresh_bytes = {key: (second_generation / f"{key}.png").read_bytes() for key in IMAGERY_KEYS}
     assert fresh_bytes["change"] != stale_bytes["change"], "the two generations must differ for this to test anything"
 
     for key in IMAGERY_KEYS:
@@ -882,39 +898,48 @@ def test_superseded_generation_preview_is_refused(tmp_path: Path, produced: dict
         assert served_current.status_code == 200
         assert served_current.content == fresh_bytes[key], f"{key}: current generation must serve current bytes"
 
+    # the producer retains the superseded generation directory
+    assert first_generation.is_dir()
+    assert _get_json(client, "/api/status")["analysis_id"] == second["analysis_id"]
 
-def test_stale_analysis_json_is_never_paired_with_new_imagery(tmp_path: Path, produced: dict[str, Path]) -> None:
-    """Previews written ahead of their analysis document must not pass as the old run.
 
-    The producer publishes ``analysis.json`` last as its completion sentinel, so a
-    client holding the previous analysis id must keep seeing the previous images
-    (or be refused), never the new ones. The API is expected to move previews to a
-    per-generation root; this assertion holds either way and fails if new bytes are
-    ever served under a superseded analysis id.
-    """
-    bundle_dir = _bundle_copy(tmp_path / "gen", produced["changed"])
-    client = _client(bundle_dir)
-    first = _get_json(client, "/api/analysis")
-    declared = _assert_declared_urls(first)
-    original = {key: (bundle_dir / f"{key}.png").read_bytes() for key in IMAGERY_KEYS}
+def test_published_generation_is_immutable_and_root_loss_is_not_served(
+    tmp_path: Path, produced: dict[str, Path]
+) -> None:
+    """Two generation guarantees: no rewriting in place, and no images once the root is gone."""
+    published = tmp_path / "published"
+    generation = _publish_into(published, threshold_db=THRESHOLD_DB)
+    root = published / "current"
 
-    next_generation = _produce(
-        tmp_path / "next", "next", followup=_followup_grid(with_tiny=True), min_area_ha=0.0
+    # republishing over an existing non-empty generation directory is refused, and
+    # the refused run leaves every byte of that generation alone
+    before = {item.name: item.read_bytes() for item in generation.iterdir() if item.is_file()}
+    manifest = _write_manifest(
+        tmp_path / "republish.json",
+        _write_raster(tmp_path / "re-before.tif", _stable_grid()),
+        _write_raster(tmp_path / "re-after.tif", _followup_grid()),
     )
-    replacement = {key: (next_generation / f"{key}.png").read_bytes() for key in IMAGERY_KEYS}
-    assert replacement["change"] != original["change"], "the two generations must differ for this to test anything"
-    for key in IMAGERY_KEYS:
-        (bundle_dir / f"{key}.png").write_bytes(replacement[key])
+    with pytest.raises(ChangeError, match="non-empty"):
+        run_change_detection(manifest, str(generation), THRESHOLD_DB + 0.5, 0.0)
+    after = {item.name: item.read_bytes() for item in generation.iterdir() if item.is_file()}
+    assert after == before, "a refused publish must leave the existing generation untouched"
+    assert _get_json(_client(root), "/api/analysis")["analysis_id"] == json.loads(
+        (generation / "analysis.json").read_text(encoding="utf-8")
+    )["analysis_id"]
 
+    # a generation root that disappears must not be served as if it were still there
+    client = _client(root)
+    analysis = _get_json(client, "/api/analysis")
+    declared = _assert_declared_urls(analysis)
+    assert all((generation / f"{key}.png").is_file() for key in IMAGERY_KEYS)
+    generation.rename(tmp_path / "moved-away")
+    status = _get_json(client, "/api/status")
+    assert status["state"] == "error", "a vanished generation root must not report ready"
     for key in IMAGERY_KEYS:
-        response = client.get(declared[key]["url"])
-        if response.status_code == 200:
-            assert response.content == original[key], (
-                f"{key}: new imagery was served under superseded analysis id "
-                f"{first['analysis_id']}; stale JSON must never be paired with new images"
-            )
-        else:
-            assert response.status_code in (404, 409, 503), f"{key}: unexpected status {response.status_code}"
+        assert client.get(declared[key]["url"]).status_code in (404, 409, 503), (
+            f"{key}: a vanished generation root must not yield image bytes"
+        )
+    assert str(tmp_path) not in status["message"] and str(generation) not in status["message"]
 
 
 def test_escaping_or_absolute_imagery_path_is_refused(tmp_path: Path, produced: dict[str, Path]) -> None:

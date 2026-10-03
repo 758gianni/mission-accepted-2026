@@ -6,6 +6,31 @@ Final integration checklist and observed mismatches for the vertical slice
 Owned by: `tests/integration/test_produced_bundle_api.py`, `docs/INTEGRATION-CHECKS.md`.
 Not owned here: `backend/`, `processing/`, `pyproject.toml`, `uv.lock`, `frontend/`.
 
+## Exact composition these results come from
+
+Executed in a scratch checkout (`/tmp/opencode/latest`), never merged into the test
+branch and never committed as source:
+
+| component | head |
+| --- | --- |
+| producer | `8027d7bd2b84f553a9d904f6473c7f8db5ae8d5d` (bundle `/tmp/producer-8027d7bd.bundle`) |
+| API | `b88dd5b7218575280e83b118d0a260661f61bbbd` (bundle `/tmp/api-b88-full.bundle`) |
+| integration setup (`pyproject.toml`, `uv.lock`) | `237d45ea506dc17d3b348f93b7cc13dfa5801ff3` (bundle `/tmp/setup-237-full.bundle`) |
+| base required by all three bundles | `3262dcb8d9fb79b1d35e2fc94cbba13557e41d33` |
+
+Environment: `uv sync --frozen` from the integration lock; CPython 3.12.3,
+rasterio 1.5.2, numpy 2.5.3, scipy 1.18.1, shapely 2.1.2, pyproj 3.8.0,
+pillow 12.3.0, fastapi 0.142.2, pydantic 2.13.5, pytest 9.1.1.
+
+Results with these exact heads, no module skipped:
+
+```
+pytest tests/integration -q   ->  30 passed
+pytest tests/backend    -q    -> 308 passed
+pytest tests/processing -q    ->  63 passed
+pytest                  -q    -> 401 passed
+```
+
 ## What the tests do
 
 Every response asserted in the suite comes from a bundle that the **real
@@ -40,7 +65,8 @@ python -m pytest tests/integration -q
 | Tiny-region filter | `min_area_ha = 0` serves both generated patches (12.6101 ha + 0.4504 ha); `min_area_ha = 0.5` serves only the large one; the `analysis_id` records the parameter |
 | Previews | the API **declares** its own preview URLs and the tests consume them: each must be same-origin (no scheme/netloc), address exactly `/api/imagery/{key}` for its own key, declare `path == "<key>.png"`, and carry exactly `analysis_id=<the served analysis_id>`; served bytes are the produced PNGs byte for byte, `image/png`, real RGBA images >1 px, bounds equal `analysis.bbox`; all three PNGs share one grid size; unknown imagery key `404`; before/after declare one shared pooled stretch |
 | Corruption / repair | invalid `analysis.json`, `region_count` mismatch, `total_changed_area_ha` that does not reconcile, a non-PNG preview, a half-published bundle (missing `regions.geojson`) and a symlinked bundle directory all become `error` with `503` on data endpoints, then `ready` again after repair, no restart |
-| Generation safety | after a second producer run into the same bundle directory, the new `analysis_id` differs, the newly declared URLs differ, the **superseded** URLs answer `409 Conflict` and never return the new bytes, and the current URLs return exactly the current bytes; separately, previews written *ahead* of their analysis document are never served under the old analysis id (either the old bytes or a refusal, never the new ones) |
+| Generation safety | a second producer run through the same pointer publishes a new generation (new `analysis_id`, new declared URLs), the **superseded** URLs answer `409 Conflict` and never return the new bytes, the current URLs return exactly the current bytes, and the superseded generation directory is retained (no auto-prune) |
+| Immutability / root loss | republishing into an existing non-empty generation directory is refused with `ChangeError` and leaves every byte untouched; once the pinned generation directory is renamed away, `/api/status` reports `error` and the pinned preview URLs never return image bytes |
 | Containment | absolute (`/etc/passwd`), escaping (`../outside.png`), nested (`previews/before.png`) and directory-like (`before.png/`) declared paths are refused with `error` + `503`; a symlinked preview inside the bundle is refused; every status message is checked for path sanitisation (no bundle path, no outside path, no temp root) without asserting the exact wording |
 | UTC dates | served timestamps are `Z`-suffixed UTC; a `+00:00` manifest input is normalised (not echoed); the two acquisitions are distinct UTC dates and strictly ascending; `baseline_at` < `detected_at`, `observation_interval` brackets them, `time_series` is ascending; a `+01:00` acquisition is refused by the producer and nothing is published |
 | Unavailable stays unavailable | `persistence.status == "not_evaluable"`, `rate` serialised as `null` (never `0`), `observations_after_detection == 0`, `historical_anomaly` `null` |
@@ -130,16 +156,15 @@ bundle being refused).
    and leaks no filesystem path (bundle dir, symlink target, temp root, or the
    rejected path candidate itself). Exact wording is deliberately not asserted.
 
-### Known gap, not hidden by the tests
+### Closed by the latest heads
 
-Generation *root* replacement (previews moving to a per-generation directory
-instead of the flat `before.png` / `after.png` / `change.png` inside the bundle
-directory) is still under API review. Until then, an in-place swap of the PNG
-bytes while the old `analysis.json` is still published is possible;
-`test_stale_analysis_json_is_never_paired_with_new_imagery` asserts the invariant
-that must hold regardless - the new bytes must never be served under the
-superseded analysis id - so the gap shows up as a failure rather than being
-hidden.
+The per-generation root is now implemented on both sides, so the earlier gap is
+closed rather than worked around: the producer publishes a fresh immutable
+generation per run (refusing a non-empty plain directory) and the API resolves
+the configured root through the producer's pointer, pins the generation for the
+snapshot, and answers `409` for a superseded `analysis_id` and `503` when the
+pinned root is gone. `test_published_generation_is_immutable_and_root_loss_is_not_served`
+now asserts exactly that, and no test mutates a published generation in place.
 
 ## Observed behaviour worth knowing (not defects)
 
@@ -160,14 +185,17 @@ hidden.
 
 ## Limitations of these checks
 
-* Everything is synthetic and small (40x40 cells, UTM 33N, 30 m). No real
-  RADARSAT-2 product is available locally yet, so nothing here exercises real
-  radiometry, terrain correction, incidence-angle behaviour or a real
-  multi-scene series.
+* **No real SAR data is exercised.** Everything is synthetic and small (40x40
+  cells, UTM 33N, 30 m). No real RADARSAT-2 product is available locally, so
+  real radiometry, terrain correction, incidence-angle behaviour, real
+  speckle statistics and a real multi-scene series remain untested end to end.
+* Registration is a manifest attestation in these fixtures, never a measurement.
+* The suite pins the heads listed above. If the producer's generation directory
+  naming or the pointer rules change again, `_publish_into` and the root-pointer
+  fixtures must be revisited deliberately.
 * Only a two-date pair is covered. Persistence and historical anomaly are
   asserted to be *unavailable*; no temporal claim is tested, because none can be
   supported yet.
-* Registration is a manifest attestation in these fixtures, not a measurement.
 * The suite asserts the published heads. If the API authors change wording
   (`"pooled stretch"` in preview labels, the causal disclaimer phrases), those
   assertions must be revisited deliberately rather than silently relaxed.

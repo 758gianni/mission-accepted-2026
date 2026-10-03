@@ -1,19 +1,24 @@
 /**
  * ForestWatch dashboard integration contract (read-only HTTP API).
  *
- * Reference API head: a3f94b345434cfc76bddefb4a3e0d6692957ccff. Producer
- * contract: b8d9059dc23efaf122ee85bd4403bcb1df350ce1 (`docs/CHANGE.md`).
+ * Reference API head: b109bfc739642140bad2db297a3332fd61445a93, which follows
+ * a3f94b345434cfc76bddefb4a3e0d6692957ccff, which follows
+ * 87cfacb58d5c4896389eb80749e6222f687db4cb. Producer contract:
+ * b8d9059dc23efaf122ee85bd4403bcb1df350ce1 (`docs/CHANGE.md`).
  *
- * Status: NOT CERTIFIED, AND NOT AUTO-CERTIFYING. The field-for-field source
- * check behind this file was performed against the previous API head
- * 87cfacb58d5c4896389eb80749e6222f687db4cb, which is the newest API head present
- * in the local object store. The reviewed head a3f94b3 could not be inspected:
- * the object is absent locally and no ref points to it, and no fetch or auth was
- * attempted. The field-level statements below are therefore verified against
- * 87cfacb, while the behavioural corrections below come from review and are
- * marked as such per field. If a further API head appears, do NOT treat this
- * file as certified against it automatically: re-run the parity check and
- * re-confirm every "reported by review" claim first.
+ * Status: NOT CERTIFIED, AND NOT AUTO-CERTIFYING. Only 87cfacb is present in
+ * this clone's object store; a3f94b3 and b109bfc7 are both absent and no ref
+ * points to either, and no fetch or authentication was attempted. So:
+ * - field-level statements and the parity check here are verified against
+ *   87cfacb, the newest API head actually available locally;
+ * - every behaviour attributed to a3f94b3 or b109bfc7 is marked *reported by
+ *   review* and is UNVERIFIED against source. That includes the strict,
+ *   producer-shaped relative generation sibling pointer, whose exact shape and
+ *   validation rules are unknown to me and are therefore deliberately NOT
+ *   typed here; confirm with the API owner before depending on it.
+ * If a further API head appears (one is already queued: a final hot-generation
+ * path guard), do NOT treat this file as certified against it. Re-run the
+ * parity check and re-confirm every "reported by review" claim first.
  *
  * The producer still has an open `relative_orbit` float-vs-integer blocker
  * (see docs/FRONTEND-HANDOFF.md section 12), so producer/API agreement is NOT
@@ -152,9 +157,19 @@ export interface ImageryItem {
   bounds: Wgs84Bounds;
   label: string;
   /**
-   * Added by the API (it is not in analysis.json). Relative path such as
-   * `/api/imagery/before`; resolve against the API origin and use as the
-   * `<img>` src.
+   * Added by the API (it is not in analysis.json). Always RELATIVE, and its
+   * exact shape is API-owned and versioned, so it MUST be consumed as declared.
+   *
+   * Reported by review for reference head b109bfc7: these declared URLs carry a
+   * generation query parameter, e.g.
+   * `/api/imagery/before?analysis_id=chg-<sha256-16>`, and a request for a
+   * stale generation answers 409. Unverified against source (see header).
+   *
+   * Consequences for the dashboard:
+   * - Use this string verbatim, resolved against the BACKEND base URL.
+   * - Never hardcode `/api/imagery/<key>`; the API owns the path and query.
+   * - Never request it relative to the frontend/Vite origin.
+   * - Never strip, rebuild or cache-bust the query yourself.
    */
   url: string;
 }
@@ -293,7 +308,10 @@ export interface RegionFeatureCollection {
 /**
  * All error bodies. 404 = nothing produced yet / unknown region id / unknown
  * imagery key. 405 = a non-GET was used. 503 = bundle present but failing
- * validation. `detail` never contains a filesystem path or raw tool output.
+ * validation. 409 = the requested generation is stale, i.e. the API has moved
+ * on to a newer bundle since `analysis_id` was read (reported by review for
+ * reference head b109bfc7; not observable at 87cfacb). `detail` never contains
+ * a filesystem path or raw tool output.
  */
 export interface ErrorResponse {
   detail: string;
@@ -306,13 +324,36 @@ export interface ErrorResponse {
 export type DashboardPhase =
   | { kind: "awaiting"; message: string }
   | { kind: "error"; message: string }
+  | { kind: "stale"; message: string }
   | {
       kind: "ready";
       analysis: AnalysisResponse;
       regions: RegionFeatureCollection;
     };
 
+/** Backend base URL, never the frontend/Vite origin. */
 const API_ORIGIN = "http://localhost:8000";
+
+/**
+ * Resolve an API-declared imagery URL against the backend base URL.
+ *
+ * The declared `url` is authoritative and must be used verbatim. Do not
+ * hardcode `/api/imagery/<key>`: reported by review for head b109bfc7 the
+ * declared URL carries a generation query parameter such as
+ * `?analysis_id=chg-<sha256-16>`, and it is the API that decides which
+ * generation that names.
+ */
+export function resolveImageryUrl(item: ImageryItem): string {
+  return new URL(item.url, `${API_ORIGIN}/`).href;
+}
+
+/** Error carrying the HTTP status, so callers can branch on 409 in particular. */
+export class ApiError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
 
 async function getJson<T>(path: string): Promise<T> {
   const response = await fetch(`${API_ORIGIN}${path}`, {
@@ -320,9 +361,13 @@ async function getJson<T>(path: string): Promise<T> {
   });
   if (!response.ok) {
     // Body is {detail}. Never fabricate a substitute payload here: an absent
-    // bundle and a broken bundle are different states and must stay visible.
+    // bundle, a broken bundle and a stale generation are different states and
+    // must stay visible rather than collapsed into one fallback.
     const body = (await response.json().catch(() => null)) as ErrorResponse | null;
-    throw new Error(body?.detail ?? `GET ${path} failed with ${response.status}`);
+    throw new ApiError(
+      response.status,
+      body?.detail ?? `GET ${path} failed with ${response.status}`,
+    );
   }
   return (await response.json()) as T;
 }
@@ -331,6 +376,10 @@ async function getJson<T>(path: string): Promise<T> {
  * Branch on status first, and only then call the data endpoints. `state`
  * defaults to the awaiting case if the response cannot be read at all, so the
  * dashboard never renders numbers it did not receive.
+ *
+ * A 409 on the data endpoints means the generation the dashboard was holding is
+ * stale (reported by review for head b109bfc7). Re-read `/api/status` and
+ * reload rather than showing the older bundle as if it were current.
  */
 export async function loadDashboard(): Promise<DashboardPhase> {
   let status: StatusResponse;
@@ -347,10 +396,19 @@ export async function loadDashboard(): Promise<DashboardPhase> {
     return { kind: "error", message: status.message };
   }
 
-  const [analysis, regions] = await Promise.all([
-    getJson<AnalysisResponse>("/api/analysis"),
-    getJson<RegionFeatureCollection>("/api/regions"),
-  ]);
+  let analysis: AnalysisResponse;
+  let regions: RegionFeatureCollection;
+  try {
+    [analysis, regions] = await Promise.all([
+      getJson<AnalysisResponse>("/api/analysis"),
+      getJson<RegionFeatureCollection>("/api/regions"),
+    ]);
+  } catch (cause) {
+    if (cause instanceof ApiError && cause.status === 409) {
+      return { kind: "stale", message: cause.message };
+    }
+    throw cause;
+  }
   return { kind: "ready", analysis, regions };
 }
 

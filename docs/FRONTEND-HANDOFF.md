@@ -7,30 +7,34 @@ no fixtures for display.
 
 ## Status: not a certified contract, and not auto-certifying
 
-The **reference API head is now `a3f94b345434cfc76bddefb4a3e0d6692957ccff`**, and
-the producer contract is unchanged at `b8d9059dc23efaf122ee85bd4403bcb1df350ce1`.
+The **reference API head is now `b109bfc739642140bad2db297a3332fd61445a93`**,
+which follows `a3f94b345434cfc76bddefb4a3e0d6692957ccff`, which follows
+`87cfacb58d5c4896389eb80749e6222f687db4cb`. The producer contract is unchanged at
+`b8d9059dc23efaf122ee85bd4403bcb1df350ce1`.
 
 | Concern | Head | Locally inspected? |
 | --- | --- | --- |
-| HTTP API, validation, models (reviewed reference) | `a3f94b345434cfc76bddefb4a3e0d6692957ccff` | **No** |
+| HTTP API (latest reviewed reference) | `b109bfc739642140bad2db297a3332fd61445a93` | **No** |
+| HTTP API (previous reviewed reference) | `a3f94b345434cfc76bddefb4a3e0d6692957ccff` | **No** |
 | HTTP API — newest head actually verifiable here | `87cfacb58d5c4896389eb80749e6222f687db4cb` | Yes |
 | Producer (change → bundle) | `b8d9059dc23efaf122ee85bd4403bcb1df350ce1` | Yes |
 | Integration decisions | `237d45ea506dc17d3b348f93b7cc13dfa5801ff3` | Yes |
 | Catalog scene selection | `dd44fa12d15893c5474f382f0e1fa9839f231308` | Yes |
 
-**The reviewed head `a3f94b3` could not be inspected.** The object is absent from
-this clone's object store and no ref points to it, and no fetch or authentication
-was attempted. So:
+**Neither `b109bfc7` nor `a3f94b3` could be inspected.** Both objects are absent
+from this clone's object store, no ref points to either (`backend-api` still
+resolves to `87cfacb`), and no fetch or authentication was attempted. So:
 
 * Every **field-level** statement and the TypeScript parity check below are
   verified against `87cfacb`, the newest API head actually available locally.
-* Every **behavioural** correction attributed to review below is marked
+* Every **behavioural** statement attributed to `b109bfc7` or `a3f94b3` is marked
   *reported by review* and is **unverified against source**. Treat it as the
-  reviewer's statement of `a3f94b3`'s behaviour, not as something re-read from
+  reviewer's statement of that head's behaviour, not as something re-read from
   code.
-* This document **does not auto-certify against a head it cannot see.** If a
-  further API head appears, do not treat this as current: re-run the parity
-  check against it and re-confirm every *reported by review* claim first.
+* This document **does not auto-certify against a head it cannot see.** A further
+  head is already **queued**: a final **hot-generation path guard**. When it
+  lands, do not treat this as current — re-run the parity check against it and
+  re-confirm every *reported by review* claim first.
 
 There is also an **open producer blocker** — see section 12. Producer/API
 agreement is **not complete**, so this contract is **not final** regardless of
@@ -48,6 +52,62 @@ from source or attributed to review, never invented.
 `contracts/forestwatch.ts` contains the TypeScript types and one short fetch
 example for these endpoints. It type-checks under `tsc --strict`.
 
+## API evolution note — `b109bfc7` (reported by review, unverified locally)
+
+The API has moved on twice since the newest head present in this clone. All three
+items below are **reported by review for
+`b109bfc739642140bad2db297a3332fd61445a93`** and are **not verified against
+source**, because that object is absent here. They change how the frontend must
+call the API.
+
+**1. Use the API-declared imagery URL. Do not construct one.**
+The declared `imagery.<key>.url` is authoritative and must be consumed **verbatim,
+resolved against the backend base URL**:
+
+```ts
+// correct: use exactly what the API declared
+const src = resolveImageryUrl(analysis.imagery.before);
+
+// wrong in all four cases:
+"/api/imagery/before"                 // hardcoded path
+`${import.meta.env.VITE_API}/api/imagery/before`  // rebuilt from scratch
+`/api/imagery/before?analysis_id=${analysis.analysis_id}` // hand-built query
+src.split("?")[0]                     // stripped query
+```
+
+* **Never hardcode `/api/imagery/<key>`.** The path is API-owned and versioned.
+* **Never request it relative to the frontend/Vite origin.** It must go to the
+  backend base URL; a same-origin request from the dev server will not reach the
+  API.
+* **Never strip, rebuild or add to the query string.** Reported by review, the
+  declared URLs now carry a generation parameter of the shape
+  `?analysis_id=chg-<sha256-16>`. That parameter is how the API names which
+  generation of the bundle the image belongs to, so it is not decoration.
+* `analysis_id` is available as a field on the analysis document if a caller
+  needs it for its own bookkeeping, but the query string belongs to the API.
+
+**2. Declared imagery URLs are generation-scoped.**
+Because the URL names a generation, a cached or in-flight request for a bundle
+the API has already replaced is stale. Reported by review, a stale request
+answers **`409`**. Treat 409 as "the bundle you were holding is no longer
+current": re-read `/api/status` and reload, rather than displaying the older
+bundle as though it were current, and rather than retrying the same stale URL.
+Do not map 409 onto the `404` (nothing produced yet) or `503` (bundle broken)
+cases — they mean different things.
+
+**3. Strict producer-shaped relative generation sibling pointer.**
+Reported by review, the API now supports a strict, producer-shaped *relative*
+generation sibling pointer. I could not inspect this head, so the exact shape,
+name and validation rules are unknown to me and are deliberately **not**
+documented as fact here. Treat it as a producer/API concern to confirm with the
+API owner before the frontend depends on it in any way. It does not change any
+field described in this document, and no example of it is given because I cannot
+verify one.
+
+**Not yet in effect.** A final **hot-generation path guard** is queued, so the
+latest head may advance again. When it does, re-check all three items above; do
+not treat this note as stable.
+
 ## 1. Endpoint summary
 
 Every route is a `GET`. There is no static mount and no directory listing.
@@ -59,9 +119,12 @@ Every route is a `GET`. There is no static mount and no directory listing.
 | `/api/analysis` | `200` | `404` absent, `503` invalid |
 | `/api/regions` | `200` | `404` absent, `503` invalid |
 | `/api/regions/{region_id}` | `200` | `404` absent **or** unknown id, `503` invalid |
-| `/api/imagery/{key}` | `200` `image/png` | `404` absent **or** unknown key, `503` invalid |
+| `/api/imagery/{key}` | `200` `image/png` | `404` absent **or** unknown key, `503` invalid, `409` stale generation (reported by review, head `b109bfc7`) |
 
-`key` must be `before`, `after` or `change`. Error bodies are always
+`key` must be `before`, `after` or `change`. Prefer reading the declared
+`imagery.<key>.url` from `/api/analysis` and resolving it against the backend
+base URL rather than building this path yourself — see the API evolution note.
+Error bodies are always
 `{"detail": "<message>"}`; messages name contract fields only and never contain
 filesystem paths or raw tool output.
 
@@ -152,10 +215,14 @@ has exactly `path`, `bounds`, `label` in the bundle; the API **adds** `url`.
 }
 ```
 
-* `url` is **relative**. Resolve it against the API origin and use it directly as
-  the `<img>` source. The dashboard never needs a bundle file path, and `path`
-  is a bundle-relative file name (`<key>.png`) that is not a URL — do not
-  concatenate it onto anything.
+* `url` is **relative** and API-owned. Resolve it against the **backend base
+  URL** and use it directly as the `<img>` source — never hardcode
+  `/api/imagery/<key>`, never fetch it from the frontend/Vite origin, and never
+  strip or rebuild its query string (reported by review it carries
+  `?analysis_id=chg-*`, which names the generation; see the API evolution note).
+  The dashboard never needs a bundle file path, and `path` is a bundle-relative
+  file name (`<key>.png`) that is not a URL — do not concatenate it onto
+  anything.
 * `bounds` and `analysis.bbox` are both `[west, south, east, north]` in WGS84
   (EPSG:4326), with `west < east`, `south < north`. Some map libraries want
   `[south, west, north, east]` — convert explicitly, do not assume.

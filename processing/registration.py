@@ -235,7 +235,8 @@ class Criteria:
     min_texture_cv: float = 0.05
     #: Smallest accepted fraction of a patch where both rasters are valid.
     min_valid_fraction: float = 0.6
-    #: Smallest accepted number of usable patches.
+    #: Smallest accepted number of usable patches. Must not exceed MAX_PATCHES, or the
+    #: criterion could never be met and the result would always be not_evaluable.
     min_patches: int = 4
     #: Largest shift, in pixels, a patch may report before it is out of search range.
     max_shift_search_pixels: float = 8.0
@@ -257,6 +258,11 @@ class Criteria:
         _require(
             isinstance(self.min_patches, int) and not isinstance(self.min_patches, bool) and self.min_patches >= 2,
             f"--min-patches must be an integer >= 2, got {self.min_patches!r}",
+        )
+        _require(
+            self.min_patches <= MAX_PATCHES,
+            f"--min-patches must be <= {MAX_PATCHES}, the number of patches this diagnostic can "
+            f"measure; got {self.min_patches!r}, which could never be satisfied",
         )
         _require(
             self.min_valid_fraction <= 1.0,
@@ -366,6 +372,9 @@ def estimate_patch_shift(
     window = np.hanning(height)[:, None] * np.hanning(width)[None, :]
     tapered_reference = prepared * window
     tapered_target = other * window
+    # The transform is padded to SciPy's fast length, which is >= 2*size but is NOT always
+    # 2*size (2*19 pads to 40, 2*23 to 48, 2*41 to 84, 2*47 to 96). Lags are centred on the
+    # padded array, so every lag below is read against padded_height/2, not against size/2.
     padded_height = int(scipy.fft.next_fast_len(2 * height))
     padded_width = int(scipy.fft.next_fast_len(2 * width))
     spectrum_reference = scipy.fft.rfft2(tapered_reference, s=(padded_height, padded_width))
@@ -373,13 +382,16 @@ def estimate_patch_shift(
     correlation = scipy.fft.irfft2(
         np.conj(spectrum_reference) * spectrum_target, s=(padded_height, padded_width)
     )
-    # Lags in [-(size/2), size/2) occupy this window of the shifted surface; taking the
-    # centred window is what makes lag 0 and both signs representable without wraparound.
+    # Lags around zero occupy this window of the shifted surface; taking a centred window is
+    # what makes lag 0 and both signs representable without wraparound.
     start_row = height - height // 2
     start_column = width - width // 2
     surface = scipy.fft.fftshift(correlation)[
         start_row : start_row + height, start_column : start_column + width
     ]
+    # index 0 of `surface` sits at this lag in the padded correlation surface
+    row_origin_lag = start_row - padded_height // 2
+    column_origin_lag = start_column - padded_width // 2
     norm = float(np.sqrt((tapered_reference**2).sum() * (tapered_target**2).sum()))
     _require(norm > 0.0, "patch pair has no correlation energy after tapering")
     surface = surface / norm
@@ -393,13 +405,13 @@ def estimate_patch_shift(
     local_maximum = surface >= ndimage.maximum_filter(surface, size=3, mode="nearest")
     rival = np.where(np.hypot(row_offsets, column_offsets) > exclusion_radius, local_maximum, False)
     rival_peak = float(np.max(surface[rival])) if bool(rival.any()) else None
-    shift_y = (peak_row - height // 2) + _parabolic_offset(surface, peak_row, peak_column, 0)
-    shift_x = (peak_column - width // 2) + _parabolic_offset(surface, peak_row, peak_column, 1)
+    shift_y = (row_origin_lag + peak_row) + _parabolic_offset(surface, peak_row, peak_column, 0)
+    shift_x = (column_origin_lag + peak_column) + _parabolic_offset(surface, peak_row, peak_column, 1)
     return {
         "shift_x": float(shift_x),
         "shift_y": float(shift_y),
-        "peak_row": int(peak_row - height // 2),
-        "peak_column": int(peak_column - width // 2),
+        "peak_row": int(row_origin_lag + peak_row),
+        "peak_column": int(column_origin_lag + peak_column),
         "normalized_peak": normalized_peak,
         "rival_peak": rival_peak,
         "dominance": float(normalized_peak / rival_peak) if rival_peak is not None and rival_peak > 0.0 else None,
@@ -459,9 +471,12 @@ def _select_patches(
     """Score candidates by dispersion, then keep the most textured and the most spread out.
 
     A correlation peak only exists where there is dispersion, so dispersion is the
-    candidate score. Selection is deterministic (score descending, then row, then column)
-    and enforces a minimum centre separation, so the accepted patches cover the overlap
-    instead of clustering on whichever corner happens to be busiest.
+    candidate score. Candidates are ordered by score (descending, then row, then column) and
+    laid out by a farthest-point traversal that enforces a minimum centre separation, so the
+    accepted patches cover the overlap instead of clustering wherever the busiest texture
+    happens to be. The traversal is retried from each of the top-scoring windows and the
+    layout holding the most patches is kept, so one busy window in the middle of the overlap
+    cannot strand the run at a single patch. Every tie is broken deterministically.
     """
     height, width = reference.shape
     rejections = {reason: 0 for reason in REJECTION_REASONS}
@@ -475,28 +490,55 @@ def _select_patches(
             continue
         scored.append((dispersion, row, column))
     scored.sort(key=lambda item: (-item[0], item[1], item[2]))
-    selected: List[Dict[str, Any]] = []
-    for dispersion, row, column in scored:
-        if len(selected) >= MAX_PATCHES:
-            break
-        centre_row = row + PATCH_SIZE / 2.0
-        centre_column = column + PATCH_SIZE / 2.0
-        if any(
-            math.hypot(centre_row - other["centre_row"], centre_column - other["centre_column"])
-            < MIN_PATCH_SEPARATION
-            for other in selected
-        ):
-            continue
-        selected.append(
+    if not scored:
+        return [], rejections
+
+    def _centre(item: Tuple[float, int, int]) -> Tuple[float, float]:
+        return item[1] + PATCH_SIZE / 2.0, item[2] + PATCH_SIZE / 2.0
+
+    def _separation(first: Tuple[float, int, int], second: Tuple[float, int, int]) -> float:
+        row_a, column_a = _centre(first)
+        row_b, column_b = _centre(second)
+        return math.hypot(row_a - row_b, column_a - column_b)
+
+    def _layout(seed: Tuple[float, int, int]) -> List[Dict[str, Any]]:
+        """Farthest-point traversal from `seed`: repeatedly take the candidate whose nearest
+        already-taken neighbour is furthest away, breaking ties towards the better-scoring
+        window. Ties on score go to the lower row and then the lower column, so the layout is
+        fully determined by the candidate list.
+        """
+        chosen = [seed]
+        while len(chosen) < MAX_PATCHES:
+            def _key(item: Tuple[float, int, int]) -> Tuple[float, float, int, int]:
+                nearest = min(_separation(item, other) for other in chosen)
+                return (-nearest, -item[0], item[1], item[2])
+
+            candidate = min((item for item in scored if item not in chosen), key=_key)
+            if min(_separation(candidate, other) for other in chosen) < MIN_PATCH_SEPARATION:
+                break
+            chosen.append(candidate)
+        return [
             {
                 "row": row,
                 "column": column,
-                "centre_row": centre_row,
-                "centre_column": centre_column,
+                "centre_row": row + PATCH_SIZE / 2.0,
+                "centre_column": column + PATCH_SIZE / 2.0,
                 "dispersion": dispersion,
             }
-        )
-    return selected, rejections
+            for dispersion, row, column in chosen
+        ]
+
+    # A single greedy pass seeded from the most textured window can strand itself: a busy window
+    # in the middle of the overlap has no other window MIN_PATCH_SEPARATION away, so the whole
+    # run collapses to one patch on an overlap that is perfectly capable of carrying four. The
+    # layout used is therefore the best of the greedy layouts seeded from each of the top
+    # windows by score, which keeps the choice deterministic and the patches spread out.
+    best = _layout(scored[0])
+    for seed in scored[1:MAX_PATCHES]:
+        attempt = _layout(seed)
+        if len(attempt) > len(best):
+            best = attempt
+    return best, rejections
 
 
 # --------------------------------------------------------------------------- #
@@ -527,6 +569,11 @@ def _summarise_shift_field(accepted: Sequence[Dict[str, Any]]) -> Dict[str, Any]
         "rotation_equivalent_rad": None,
         "dilation_equivalent": None,
         "shear_equivalent": None,
+        "shift_field_note": (
+            "a rotation, dilation and shear read-out needs at least 3 accepted patches on "
+            "non-collinear centres; it is reported as null when they are not estimable, and it is "
+            "never applied as a correction"
+        ),
     }
     shift_x, shift_y = _centre_shift(accepted)
     if shift_x is None:
@@ -558,6 +605,16 @@ def _summarise_shift_field(accepted: Sequence[Dict[str, Any]]) -> Dict[str, Any]
                 np.array([record["shift_pixels"]["y"] for record in accepted]),
             ]
         )
+        # A plane through the shifts needs three non-collinear patch centres. If the centres
+        # are collinear (all on one row, all on one column, or too few) lstsq still returns a
+        # least-norm solution, which would print a rotation and a shear that were never
+        # determined by the data. Report nothing instead.
+        if int(np.linalg.matrix_rank(design)) < 3:
+            summary["shift_field_note"] = (
+                "the accepted patch centres are collinear or otherwise rank deficient, so the "
+                "rotation, dilation and shear read-outs are not estimable and are reported as null"
+            )
+            return summary
         try:
             coefficients = np.linalg.lstsq(design, observed, rcond=None)[0]
         except np.linalg.LinAlgError:  # pragma: no cover - numerically degenerate input
@@ -714,6 +771,17 @@ def diagnose_arrays(
             f"the common grid is {width}x{height} px, smaller than the {PATCH_SIZE} px patch the "
             "correlator needs; widen the overlap window upstream"
         )
+    elif rejections["out_of_search_range"] > 0:
+        # At least one selected patch put its peak outside the range the caller is prepared to
+        # accept, so the true shift may be larger than anything measured here. The residual is
+        # then unknown, not small: reporting the surviving patches as a bounded answer would
+        # understate the misalignment.
+        status = STATUS_NOT_EVALUABLE
+        status_reasons.append(
+            f"{rejections['out_of_search_range']} selected patch(es) reported a shift beyond the "
+            f"caller's search bound of {criteria.max_shift_search_pixels:g} px, so this measurement "
+            "cannot bound the residual translation and the alignment is unknown rather than small"
+        )
     elif len(accepted) < criteria.min_patches:
         status = STATUS_NOT_EVALUABLE
         status_reasons.append(
@@ -751,8 +819,34 @@ def diagnose_arrays(
             f"{criteria.max_patch_deviation_pixels:.3f} px limits"
         )
 
+    usable = status == STATUS_ALIGNED and rejections["out_of_search_range"] == 0
+    if usable:
+        usable_reason = (
+            "the fitted shift is inside the caller's tolerance, the accepted patches agree, and no "
+            "patch fell outside the caller's search bound"
+        )
+    elif status == STATUS_NOT_EVALUABLE:
+        usable_reason = (
+            "not evaluable: " + " ".join(status_reasons) + " The residual translation is UNKNOWN "
+            "from this measurement. It is not zero and not small, and no registration status may be "
+            "read from it."
+        )
+    elif status == STATUS_INCONSISTENT:
+        usable_reason = (
+            "not usable as a single registration number: the accepted patches disagree by more than "
+            f"the caller's {criteria.max_patch_deviation_pixels:g} px, so the residual is not one "
+            "translation and its value is unknown"
+        )
+    else:
+        usable_reason = (
+            "the fitted shift is outside the caller's tolerance, so the pair is measured as "
+            "misregistered and no registration status may be read from this output"
+        )
+
     measured = {
         "model": "global_translation",
+        "usable_measurement": bool(usable),
+        "usable_measurement_reason": usable_reason,
         "patches_selected": len(evidence),
         "patches_accepted": len(accepted),
         "accepted_patch_rows": sorted({int(record["centre_row_px"]) for record in accepted}),
@@ -852,27 +946,50 @@ def diagnose_arrays(
 
 
 def _diagnostic_text(payload: Dict[str, Any]) -> str:
-    """One sentence a human may consider for a manifest field. Never written to one."""
+    """A sentence a human may consider for a manifest field. Never written to one.
+
+    No translation is quoted as an answer unless the measurement is usable: a not-evaluable or
+    inconsistent result says plainly that the residual is unknown, because quoting a median shift
+    there would read as a measured valid registration.
+    """
     measured = payload["measured"]
     magnitude = measured["shift_magnitude_pixels"]
     spread = measured["max_patch_deviation_pixels"]
     accepted = measured["patches_accepted"]
-    if magnitude is None or spread is None:
+    status = payload["status"]
+    if not measured.get("usable_measurement"):
+        if status == STATUS_INCONSISTENT:
+            return (
+                f"Residual coregistration diagnostic: status {status}. The {accepted} accepted "
+                f"patches disagree by up to {spread:.3f} px, so no single translation describes "
+                "this pair and the residual displacement is unknown. No translation is quoted as an "
+                "answer and no registration status may be read from this output. This diagnostic "
+                "measured the rasters as delivered; it did not verify registration, correct it, or "
+                "set any manifest field."
+            )
+        reasons = " ".join(payload["status_reasons"])
         return (
-            f"Residual coregistration diagnostic: status {payload['status']}. No global "
-            "translation could be fitted from the jointly valid, textured patches of the overlap, "
-            "so registration is not evaluable by this method. This is a measurement tool only: it "
-            "did not verify registration, correct it, or set any manifest field."
+            f"Residual coregistration diagnostic: status {status}. {reasons} The residual "
+            "displacement between these two rasters is UNKNOWN from this measurement: it is not "
+            "zero and not small, and no translation is offered for a manifest field. This "
+            "diagnostic did not verify registration, correct it, or set any manifest field."
+        )
+    if magnitude is None or spread is None:  # pragma: no cover - usable implies a fitted shift
+        return (
+            f"Residual coregistration diagnostic: status {status}. No translation is quoted "
+            "because none was fitted. This diagnostic did not verify registration, correct it, or "
+            "set any manifest field."
         )
     shift = measured["shift_pixels"]
     return (
-        f"Residual coregistration diagnostic: status {payload['status']}. Phase correlation over "
-        f"{accepted} independent jointly valid textured patches of the overlapping footprint gives "
-        f"a median global translation of {shift['x']:+.3f} px in x and {shift['y']:+.3f} px in y "
+        f"Residual coregistration diagnostic: status {status}. Phase correlation over {accepted} "
+        f"independent jointly valid textured patches of the overlapping footprint gives a median "
+        f"global translation of {shift['x']:+.3f} px in x and {shift['y']:+.3f} px in y "
         f"({magnitude:.3f} px magnitude), with the accepted patches agreeing to within "
         f"{spread:.3f} px. The estimate covers translation only; rotation, scale and relief "
-        "displacement are not modelled or corrected. This diagnostic measured the rasters as "
-        "delivered; it did not verify registration, correct it, or alter any manifest."
+        "displacement are not modelled or corrected, and speckle is not filtered, so this is a "
+        "measurement of the dominant structure and not a verification. This diagnostic measured the "
+        "rasters as delivered; it did not verify registration, correct it, or alter any manifest."
     )
 
 

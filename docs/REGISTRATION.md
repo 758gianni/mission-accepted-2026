@@ -84,6 +84,56 @@ tolerance — covered by
 6. **Centre.** Componentwise median of the accepted per-patch shifts, plus the maximum
    and median distance of an accepted patch from it.
 
+### Minimum footprint and patch layout
+
+| Overlap (32 px patches) | Accepted patches | Default criterion |
+| --- | --- | --- |
+| 64 x 64 px | 1 | `not_evaluable` |
+| 80 x 80 px | 2 | `not_evaluable` |
+| **96 x 96 px** | **4** | usable |
+| 128 x 128 px | 5 | usable |
+| 192 x 192 px | 8 | usable |
+
+**96 x 96 px is the minimum overlap** that can satisfy the default four-patch criterion, and
+that is a floor rather than a working margin: two separated patch centres per direction
+(`MIN_PATCH_SEPARATION = 2 x PATCH_SIZE = 64` px) leaves no room for texture variation. At
+12.5 m sampling 96 px is a 1.2 km overlap; at 30 m it is 2.9 km. A wider overlap gives the
+selection more freedom, so it can place patches away from the overlap edges — which matters
+because patches placed on an edge carry the largest bias (see below). Anything narrower than
+96 x 96 px needs a smaller `min_patches` and an explicit acknowledgement that a
+two-patch measurement is weak.
+
+### Measured bias: the shift is systematically too small
+
+Across four synthetic scenes and shifts of 1-5 px, the fitted magnitude is an
+**under**estimate of the injected shift by **3.3 % to 5.9 %, median 4.0 %**, and the
+per-patch spread grows with the shift:
+
+| Shift | Recovered | Error | Error % | Max per-patch spread |
+| --- | --- | --- | --- | --- |
+| 1.0 px | 0.96 px | 0.04 px | 3.3-5.8 % | 0.05 px |
+| 3.0 px | 2.83 px | 0.11-0.18 px | 3.4-5.8 % | 0.13-0.16 px |
+| 5.0 px | 4.79 px | 0.17-0.29 px | 3.4-5.9 % | 0.11-0.47 px |
+
+At shifts approaching the search bound the effect is much larger than 6 %: a 6 px shift
+measured on 32 px patches gave per-patch estimates spread over about 2.5 px, because patches
+near the overlap edge carry content that the Hann taper and the finite window handle poorly.
+
+**Tolerance-boundary implication.** The bias is one-sided: the measurement never runs large,
+only small. A result that lands *just inside* `max_shift_pixels` may be a shift just outside
+it — with the default 1.0 px tolerance the boundary is fuzzy by roughly 0.04 px, and with a
+0.25 px tolerance by roughly 0.01 px. Consequences:
+
+* Treat a magnitude within about 6 % of the tolerance as **unresolved**, not as passing.
+* Do not tune `max_shift_pixels` to sit close to the observed misregistration of a pair; that
+  inverts the sign of the error.
+* `max_patch_deviation_pixels` must be loosened as the expected shift grows, or the run will
+  report `inconsistent_local_shifts` for a pair that is merely badly aligned. The default
+  0.5 px is appropriate only for shifts of roughly 1-3 px on 32 px patches.
+
+Every figure here is from synthetic textures. No real prepared RADARSAT-2 pair was available,
+so none of these numbers has been confirmed on real backscatter.
+
 ### No speckle filter, on measured evidence
 
 A 3×3 box mean was tried and rejected. On the synthetic textured scenes used to develop
@@ -95,23 +145,9 @@ has **not** been validated here.
 
 ## Observed accuracy
 
-Measured on synthetic textured scenes, 32×32 patches, shifts applied with cubic
-interpolation (`tests/processing/test_registration.py`):
-
-| Injected shift | Recovered | Error |
-| --- | --- | --- |
-| `(0, 0)` | `(0.00, 0.00)` | 0.00 px |
-| `(4, 0)` | `(3.79, 0.00)` | 0.21 px |
-| `(0, -6)` | `(0.00, -5.71)` | 0.29 px |
-| `(-3, 5)` | `(-2.89, 4.82)` | 0.24 px |
-| `(1.5, -1.25)` | within 0.35 px | ≤ 0.35 px |
-
-Accuracy **degrades as the shift approaches the search bound**: at a 6 px shift on a
-32 px patch the per-patch spread reached ~0.8 px. A caller who needs a tight
-`max_patch_deviation_pixels` should lower `max_shift_search_pixels` rather than expect
-both. These figures characterise this implementation on synthetic data only. No real
-RADARSAT-2 product was available while this was written, so no accuracy figure has been
-established on real prepared backscatter.
+See *Measured bias* above for the systematic underestimate and the minimum footprint. The
+per-test expectations are `abs=0.35` px for integer and sub-pixel shifts, which the
+measured 3.3-5.9 % bias satisfies up to a 6 px shift.
 
 ## The caller's criterion, and the statuses
 
@@ -128,12 +164,18 @@ All eight thresholds are echoed into the output under `criterion`.
 | `min_patches` | smallest accepted number of usable patches |
 | `max_shift_search_pixels` | largest shift a patch may report before it is `out_of_search_range`; must be ≤ 15 px, since beyond that the zero-padded surface wraps onto a spurious shift |
 
+`min_patches` must not exceed `MAX_PATCHES` (12); the CLI refuses a larger value, because a
+criterion that can never be met would silently turn every run into `not_evaluable`.
+
 Statuses, decided in this order:
 
 1. `not_evaluable` — the overlap is smaller than one patch, fewer than `min_patches`
-   patches were usable, or the accepted patches do not span at least 2 distinct centre
-   rows and 2 distinct centre columns. One textured corner cannot stand in for a global
-   shift.
+   patches were usable, the accepted patches do not span at least 2 distinct centre rows and
+   2 distinct centre columns, or **a selected patch reported a shift beyond the caller's
+   search bound**. One textured corner cannot stand in for a global shift, and a shift that
+   ran past the search bound has not been measured at all — the residual is then unknown,
+   not small.
+
 2. `inconsistent_local_shifts` — accepted patches disagree by more than
    `max_patch_deviation_pixels`. A single global translation does not describe these two
    rasters, so no single number is reported as the answer.
@@ -143,6 +185,18 @@ Statuses, decided in this order:
 
 Consistency is checked before magnitude on purpose: when the patches disagree, the
 centre shift is not a meaningful number to compare against a tolerance.
+
+`measured.usable_measurement` is `true` only for `within_caller_tolerance` with no patch
+outside the search bound, and `usable_measurement_reason` states why when it is `false`.
+Only a usable measurement produces a `manifest_registration_diagnostic_text` that quotes a
+translation; otherwise the text says the residual is **UNKNOWN** and offers nothing for a
+manifest field. A `not_evaluable` or `inconsistent_local_shifts` run never prints a median
+translation that a reader could mistake for a validated registration.
+
+`rotation_equivalent_rad`, `dilation_equivalent` and `shear_equivalent` are `null` when the
+accepted patch centres are collinear or otherwise rank deficient (fewer than 3 non-collinear
+centres): `lstsq` would return a least-norm solution that looks like a measurement but is
+determined by nothing in the data.
 
 ## Metric shift
 
@@ -226,17 +280,33 @@ ones that decide whether a result may be trusted:
 * **Calibration, geocoding and terrain correction remain upstream attestations.** This
   tool does not inspect the processing that produced the rasters it measures.
 
+## Clarifications
+
+* **Zero mean.** The diagnostic reports a translation only. It does not remove, correct or
+  even characterise any radiometric offset between the two dates: patches are standardised to
+  zero mean solely so the correlation is invariant to a difference in brightness, and a
+  genuine radiometric change is invisible to it by construction.
+* **Exit codes.** `0` means the diagnostic was written and the measurement ran; it does not
+  mean the pair is aligned, and it does not mean anything was verified. Read `status` and
+  `measured.usable_measurement` from the file. `2` means no output file was written.
+* **Patch shape.** `PATCH_SIZE` is 32, but `estimate_patch_shift` accepts any patch size and
+  the reported lag is read against the padded FFT geometry, not against `size/2`; a regression
+  test covers the sizes whose fast FFT length is not `2 * size` (19, 23, 41, 47).
+
 ## Tests
 
 ```bash
 PYTHONPATH=. python -m pytest tests/processing/test_registration.py
 ```
 
-43 tests, 3 s. Every fixture is synthetic and generated inside the test module. There
+62 tests, ~5 s. Every fixture is synthetic and generated inside the test module. There
 are **no real prepared rasters in this repository**, and these textures are synthetic
 patterns, not backscatter; they must never be published as results.
 
-Covered: known integer and sub-pixel shifts; a zero shift; a purely radiometric
+Covered: the padded-FFT lag regression across seven patch sizes; `min_patches` bounded by
+the patch budget; withholding of the candidate manifest sentence unless the measurement is
+usable; gating when a patch falls outside the search bound; collinear centres publishing no
+rotation; the minimum-overlap boundary at 96 px; known integer and sub-pixel shifts; a zero shift; a purely radiometric
 difference not inventing a shift; metric conversion, and its refusal for non-metric CRS;
 nodata borders, holes and sparse valid support; a pair with no shared valid support; a
 homogeneous pair; speckle-like noise with no structure; a 4 px periodic pattern; patches

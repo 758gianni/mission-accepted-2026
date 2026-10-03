@@ -28,6 +28,8 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from processing.registration import (  # noqa: E402
+    MAX_PATCHES,
+    MIN_PATCH_SEPARATION,
     PATCH_SIZE,
     STATUS_ALIGNED,
     STATUS_EXCEEDS_TOLERANCE,
@@ -116,6 +118,41 @@ def accepted_shifts(report):
     ]
 
 
+def padded_scene(size, seed=5):
+    """A textured scene large enough that a patch of any tested size can be cut from it."""
+    return textured_scene(size=size + 2 * PATCH_SIZE, seed=seed)
+
+
+# --------------------------------------------------------------------------- #
+# regression: FFT padding must not bias the reported lag
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("size", [16, 19, 23, 32, 41, 47, 64])
+def test_every_patch_size_measures_a_known_shift(size):
+    """The correlation FFT is padded to scipy's fast length, which is not always 2*size.
+
+    Sizes 19, 23, 41 and 47 pad to 40, 48, 84 and 96, where a lag read as if the array were
+    2*size lands about one pixel out. The reported lag must come from the padded geometry.
+    """
+    scene = padded_scene(size)
+    shifted = shift_scene(scene, 0.0, 3.0)
+    patch = scene[PATCH_SIZE : PATCH_SIZE + size, PATCH_SIZE : PATCH_SIZE + size].copy()
+    target = shifted[PATCH_SIZE : PATCH_SIZE + size, PATCH_SIZE : PATCH_SIZE + size].copy()
+    estimate = estimate_patch_shift(patch, target, np.ones((size, size), dtype=bool))
+    assert estimate["shift_x"] == pytest.approx(0.0, abs=0.35)
+    assert estimate["shift_y"] == pytest.approx(3.0, abs=0.35)
+    assert estimate["peak_row"] == 3, "the integer peak lag must be reported in true lag units"
+    assert estimate["peak_column"] == 0
+
+
+@pytest.mark.parametrize("size", [19, 23, 41, 47])
+def test_a_padded_fft_length_is_detected_by_the_regression_case(size):
+    """Guard the guard: these sizes really do pad away from 2*size."""
+    import scipy.fft
+
+    assert scipy.fft.next_fast_len(2 * size) != 2 * size
+    assert scipy.fft.next_fast_len(2 * PATCH_SIZE) == 2 * PATCH_SIZE
+
+
 # --------------------------------------------------------------------------- #
 # known shifts
 # --------------------------------------------------------------------------- #
@@ -123,7 +160,9 @@ def accepted_shifts(report):
 def test_known_integer_shift_is_recovered(shift_x, shift_y):
     scene = textured_scene()
     report = diagnose_arrays(
-        scene, shift_scene(scene, shift_x, shift_y), criteria=strict_criteria(max_shift_pixels=8.0)
+        scene,
+        shift_scene(scene, shift_x, shift_y),
+        criteria=strict_criteria(max_shift_pixels=8.0, max_patch_deviation_pixels=3.0),
     )
     assert report["status"] == STATUS_ALIGNED, report["status_reasons"]
     measured = report["measured"]["shift_pixels"]
@@ -423,6 +462,109 @@ def test_a_search_bound_beyond_the_correlation_window_is_refused():
         diagnose_arrays(scene, scene, criteria=strict_criteria(max_shift_search_pixels=20.0))
 
 
+def test_a_patch_count_above_the_patch_budget_is_refused():
+    scene = textured_scene()
+    with pytest.raises(RegistrationError, match=f"--min-patches must be <= {MAX_PATCHES}"):
+        diagnose_arrays(scene, scene, criteria=strict_criteria(min_patches=MAX_PATCHES + 1))
+    # the boundary itself is allowed
+    diagnose_arrays(scene, scene, criteria=strict_criteria(min_patches=MAX_PATCHES))
+
+
+# --------------------------------------------------------------------------- #
+# the measurement must not be dressed up as a registration attestation
+# --------------------------------------------------------------------------- #
+def test_no_candidate_manifest_sentence_is_offered_when_the_status_is_not_evaluable():
+    scene = textured_scene(seed=71)
+    # the patch budget of 12 cannot be met by this overlap, so the caller's criterion fails
+    # even though individual patches correlate perfectly
+    report = diagnose_arrays(scene, shift_scene(scene, 0.0, 0.0), criteria=strict_criteria(min_patches=MAX_PATCHES))
+    assert report["status"] == STATUS_NOT_EVALUABLE
+    text = report["manifest_registration_diagnostic_text"]
+    assert "median global translation" not in text
+    assert STATUS_NOT_EVALUABLE in text
+    assert "UNKNOWN" in text
+    assert "no translation is offered" in text
+    assert report["measured"]["usable_measurement"] is False
+
+
+def test_a_candidate_manifest_sentence_is_offered_only_for_a_usable_measurement():
+    scene = textured_scene(seed=73)
+    report = diagnose_arrays(scene, shift_scene(scene, 0.0, 0.0), criteria=strict_criteria())
+    assert report["status"] == STATUS_ALIGNED
+    assert report["measured"]["usable_measurement"] is True
+    assert "median global translation" in report["manifest_registration_diagnostic_text"]
+
+
+def test_inconsistent_patches_do_not_offer_a_single_translation_as_the_answer():
+    scene = textured_scene(size=256, seed=79)
+    target = scene.copy()
+    target[128:] = shift_scene(scene[128:], 5.0, 4.0)
+    report = diagnose_arrays(scene, target, criteria=strict_criteria())
+    assert report["status"] == STATUS_INCONSISTENT
+    assert report["measured"]["usable_measurement"] is False
+    text = report["manifest_registration_diagnostic_text"]
+    assert "median global translation" not in text
+    assert "disagree" in text
+
+
+def test_a_shift_beyond_the_callers_search_bound_gates_the_measurement():
+    scene = textured_scene(seed=83)
+    report = diagnose_arrays(
+        scene,
+        shift_scene(scene, 9.0, 0.0),
+        criteria=strict_criteria(max_shift_search_pixels=6.0, max_shift_pixels=1.0),
+    )
+    assert report["patch_rejections"]["out_of_search_range"] > 0
+    assert report["measured"]["usable_measurement"] is False
+    assert report["status"] == STATUS_NOT_EVALUABLE
+    assert "search bound" in " ".join(report["status_reasons"])
+    assert "unknown" in report["manifest_registration_diagnostic_text"]
+
+
+def test_rank_deficient_patch_layout_publishes_no_rotation_estimate():
+    """Collinear patch centres cannot define a shift plane, so no rotation may be claimed."""
+    source = textured_scene(seed=89)
+    band = slice(64, 64 + PATCH_SIZE)  # 64 is on the 16 px candidate lattice
+    # only the window fully inside this 32 px band survives a 0.9 valid-fraction criterion,
+    # so every accepted patch centre lies on one row and the centres are collinear
+    scene = np.full((SIZE, SIZE), np.nan)
+    target = np.full((SIZE, SIZE), np.nan)
+    scene[band, :] = source[band, :]
+    target[band, :] = shift_scene(source, 1.0, 0.0)[band, :]
+    report = diagnose_arrays(
+        scene, target, criteria=strict_criteria(min_patches=2, min_valid_fraction=0.9)
+    )
+    accepted = [record for record in report["patch_evidence"] if record["accepted"]]
+    assert len(accepted) >= 2
+    assert len({record["centre_row_px"] for record in accepted}) == 1
+    measured = report["measured"]
+    assert measured["rotation_equivalent_rad"] is None
+    assert measured["dilation_equivalent"] is None
+    assert measured["shear_equivalent"] is None
+    assert measured["usable_measurement"] is False
+
+
+# --------------------------------------------------------------------------- #
+# minimum overlap and patch layout
+# --------------------------------------------------------------------------- #
+def test_the_default_criterion_needs_an_overlap_of_at_least_three_patches_across():
+    """Two separated patches in each direction is the smallest layout the criterion allows."""
+    minimum = 3 * PATCH_SIZE
+    scene = textured_scene(size=minimum, seed=97)
+    report = diagnose_arrays(scene, shift_scene(scene, 0.0, 0.0), criteria=strict_criteria())
+    assert report["status"] == STATUS_ALIGNED, report["status_reasons"]
+    assert report["measured"]["patches_accepted"] >= 4
+    assert MIN_PATCH_SEPARATION == 2 * PATCH_SIZE
+
+
+def test_an_overlap_narrower_than_three_patches_across_is_not_evaluable():
+    scene = textured_scene(size=3 * PATCH_SIZE - 1, seed=101)
+    report = diagnose_arrays(scene, shift_scene(scene, 0.0, 0.0), criteria=strict_criteria())
+    assert report["status"] == STATUS_NOT_EVALUABLE
+    assert report["measured"]["patches_accepted"] < 4
+    assert report["measured"]["usable_measurement"] is False
+
+
 def test_shifted_content_on_an_identical_grid_does_not_pass_because_the_grid_matched():
     """Two rasters can share transform, CRS and shape and still be badly misregistered."""
     scene = textured_scene(seed=43)
@@ -583,7 +725,7 @@ def test_cli_uses_different_grids_for_the_two_rasters_and_says_so(tmp_path):
 
 
 def test_module_runs_as_a_subprocess_and_exits_zero(tmp_path):
-    scene = textured_scene(size=96, seed=67)
+    scene = textured_scene(size=64, seed=67)
     reference_path = write_raster(tmp_path / "reference.tif", scene)
     target_path = write_raster(tmp_path / "target.tif", scene.copy())
     out_path = tmp_path / "diagnostic.json"
@@ -607,6 +749,7 @@ def test_module_runs_as_a_subprocess_and_exits_zero(tmp_path):
     )
     assert completed.returncode == 0, completed.stderr
     report = json.loads(out_path.read_text(encoding="utf-8"))
-    # a 96 px overlap is smaller than the 4 patches the default criterion needs
+    # a 64 px overlap cannot hold the 4 separated patches the default criterion needs
     assert report["status"] == STATUS_NOT_EVALUABLE
     assert report["measured"]["patches_accepted"] < 4
+    assert report["measured"]["usable_measurement"] is False

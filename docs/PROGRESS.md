@@ -1,6 +1,6 @@
 # Goal and progress
 
-Updated: 2026-10-03 12:39 UTC. This is a living milestone ledger. Start a takeover with [TAKEOVER.md](TAKEOVER.md); re-query workers and remote heads before acting. Update these documents after meaningful results, reviews, fixes, integration, downloads and scientific validation.
+Updated: 2026-10-03 12:43 UTC. This is a living milestone ledger. Start a takeover with [TAKEOVER.md](TAKEOVER.md); re-query workers and remote heads before acting. Update these documents after meaningful results, reviews, fixes, integration, downloads and scientific validation.
 
 ## Goal
 
@@ -56,3 +56,7 @@ Do not authenticate as an agent. Do not put credentials or tokens in chat, promp
 Lead independently exported exact APIb88, producer8027 and integrationeda4 with frozen setup237 into /tmp/forestwatch-checkpoint-401. Command: uv run --frozen pytest tests/integration tests/backend tests/processing/test_change.py -q. Result: 401 passed, one Starlette/httpx dependency warning, 9.37 seconds. This validates prepared synthetic rasters -> producer bundle -> API on these exact heads, not real RADARSAT-2 preprocessing or a validated change event.
 
 The acquisition coordinator reproduced transient raw-output and manifest-token persistence with static sentinels and no authentication. Owner run0290d1f6-e309-40cc-9a80-dc6b21ff2593 corrects persistence before redaction and real-home test reads. Reviewer amendment9dd99998-0757-40b3-b922-4c3a461af22f accounts for the stricter user requirement.
+
+Producer metadata correction is now published at4ada2a357f7e55b05973043bebbd7c3b52684734; 64 tests passed, existing reviewer re-reviewa013dd63 pending. This new head has not yet been used in the lead's 401-test checkpoint, which belongs to8027d7bd. Calibration4fb2b713 is remotely verified and independently passed57tests; existing scientific re-review758b92f1 remains pending. No approval or additional implementation merge is implied.
+
+API exact-head reviewer now requests narrow documentation corrections (mandatory Pillow, supported versioned bundle pointers);308 owned tests and179 independent probes pass, one platform-specific probe skipped. Implementation and new-head re-review remain with existing owner/reviewer. Integrationeda4 owner report is complete and durable; existing reviewer continuation28e83247 is queued. Live team snapshot:43 workers,8running,25completed,3recovery_required,3failed,4previouslydestroyed. Controller states can lag actual execution.

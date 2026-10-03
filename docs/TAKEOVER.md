@@ -1,6 +1,6 @@
 # Takeover guide and goal ledger
 
-Updated: 2026-10-03 12:39 UTC. Read this first, then [PROGRESS.md](PROGRESS.md) and [STATUS-2026-10-03.md](STATUS-2026-10-03.md). These documents must be updated after meaningful evidence, fixes, reviews, integration, downloads and validation. They are snapshots; query live workers and exact remote heads before acting.
+Updated: 2026-10-03 12:43 UTC. Read this first, then [PROGRESS.md](PROGRESS.md) and [STATUS-2026-10-03.md](STATUS-2026-10-03.md). These documents must be updated after meaningful evidence, fixes, reviews, integration, downloads and validation. They are snapshots; query live workers and exact remote heads before acting.
 
 ## Mission and authority
 
@@ -106,7 +106,7 @@ States below are snapshots and may lag real execution. Re-query before dispatch 
 | sar-science-recon | w-654d852d-05ed-419f-b364-069713220323 | researcher | destroyed |
 | dashboard-science-review | w-8093558c-8b91-4c1b-a2d8-f43419432e14 | reviewer | destroyed |
 | repository-checkout-smoke | w-5e9b09b9-9222-4292-b7a8-e6fe9070a268 | reviewer | destroyed |
-| acquisition-cli | w-544f8b0e-1b02-45a0-a6dd-4aa76c2bf1f2 | coder | recovery_required |
+| acquisition-cli | w-544f8b0e-1b02-45a0-a6dd-4aa76c2bf1f2 | coder | running |
 | catalog-scene-selection | w-52812be0-5278-4df1-98d8-affa52949791 | researcher | recovery_required |
 | raw-product-inventory | w-afc4b51c-3712-4881-a287-074041a72204 | coder | recovery_required |
 | backend-api | w-637aa6d9-c6aa-4745-aca8-375d93277e9f | coder | completed |
@@ -119,7 +119,7 @@ States below are snapshots and may lag real execution. Re-query before dispatch 
 | review-acquisition-security | w-ed15e6dd-61cd-4ce1-a439-5ed249791cd7 | reviewer | completed |
 | sgf-preprocessing-route | w-69e73c70-ee18-4473-8b83-986b8b762275 | researcher | completed |
 | review-prepared-pair-change | w-7797c47f-9903-45b0-bbb7-70e3b15b2ae0 | reviewer | completed |
-| offline-bundle-api-tests | w-aa748747-0c64-4955-96b5-f443faab8929 | coder | running |
+| offline-bundle-api-tests | w-aa748747-0c64-4955-96b5-f443faab8929 | coder | completed |
 | offline-registration-diagnostics | w-47286095-410b-4a35-bb21-ac93030eebdc | coder | completed |
 | offline-calibration-preflight | w-e638ceed-e7d9-40e5-8c55-34ebdb5a146f | coder | running |
 | offline-catalog-selector | w-c929c0c3-f4a3-4350-a1fb-0ea93bc5b793 | coder | recovery_required |
@@ -134,14 +134,14 @@ States below are snapshots and may lag real execution. Re-query before dispatch 
 | review-api-final-recovery | w-57357621-0246-476a-9f8d-0040d87d0a94 | reviewer | completed |
 | review-registration-offline | w-54bf1c45-5514-4f1b-b2fd-f65fdf677866 | reviewer | completed |
 | review-selector-offline | w-4574e0d6-398c-43b6-bf65-bb74e18b2a2b | reviewer | completed |
-| review-integration-suite-offline | w-3b91da88-05e9-4558-a670-a9a60137e55a | reviewer | failed |
+| review-integration-suite-offline | w-3b91da88-05e9-4558-a670-a9a60137e55a | reviewer | running |
 | review-dashboard-handoff-offline | w-359ba2f9-93e1-4136-bc8f-3ed0139fdda7 | reviewer | completed |
 | review-demo-runbook-offline | w-1489e4f2-838a-4205-9f7f-328eeb1186c0 | reviewer | failed |
 | review-acquisition-final | w-0362d214-3350-4404-b698-999ff78beb5b | reviewer | completed |
 | review-inventory-final | w-8038e552-88a7-4685-89f6-5c7f425b77ff | reviewer | completed |
-| review-calibration-preflight-science | w-ba6ffc8d-37e3-4de6-aa6a-0fd4481a2dba | reviewer | completed |
+| review-calibration-preflight-science | w-ba6ffc8d-37e3-4de6-aa6a-0fd4481a2dba | reviewer | running |
 | review-catalog-report-final | w-cf66d38d-ad88-4d0d-84c4-49cd1a6cbf9c | reviewer | completed |
-| review-acquisition-eb692-final | w-107444be-e734-43a4-b282-f75d2905f770 | reviewer | completed |
+| review-acquisition-eb692-final | w-107444be-e734-43a4-b282-f75d2905f770 | reviewer | running |
 | review-producer-8027-final | w-6bd49356-38ce-4a7e-8bd3-283248d43205 | reviewer | running |
 | review-api-b88-final | w-1e26dd13-ed66-46e0-a834-cd5c83269320 | reviewer | running |
 | historical-forest-validation-target | w-8c27c80d-af9a-420e-9309-262e2197e38c | researcher | running |
@@ -159,8 +159,14 @@ Immediate handoff order:
 5. Dispatch actual dataset reconnaissance immediately when files appear. Determine calibration, geocoding and measured registration from delivered products before implementing a raw adapter.
 6. Produce and validate a real bundle, supply the reviewed frontend contract and a concrete real result to human teammates, select a validated example and rehearse the presentation.
 
-Latest reviewer finding: producer reviewer completed inspection of exact 8027d7bd and requested changes because emitted preprocessing metadata still says minimum-area filtering uses mean geodesic cell area, while the implementation now uses exact polygon area. Existing owner will fix this stale scientific description; 63 component tests and seven independent probes passed. Its concurrent publication experiment recorded 121,258 pinned reads without mixed generations. This is useful evidence, not approval of the stale metadata or a real-data validation.
+Latest reviewer finding and correction: producer reviewer rejected exact 8027d7bd because emitted preprocessing metadata still described mean-cell-area filtering instead of actual exact polygon area. Owner correction is now published at `4ada2a357f7e55b05973043bebbd7c3b52684734`; 64 tests passed in 5.02 seconds. Current report042e3a87 was normalized only after completed assistant/clean source/test evidence matched. Existing reviewer re-review run is `a013dd63`; exact approval is pending. The earlier review also passed seven independent probes and recorded 121,258 concurrent pinned reads without mixed generations. Neither that experiment nor component tests establishes real-data validity.
 
-Latest calibration recovery: the native coordinator found a completed clean VM commit `4fb2b7133ae16263d4a9262702b76831b75be221`, reported 57 passing tests, but stale report identity and no remote publication yet. Coordinator is re-verifying, preserving and publishing it. Do not substitute that report for approval or assume remote durability until verified.
+Latest calibration recovery: `4fb2b7133ae16263d4a9262702b76831b75be221` is remotely verified; native re-run: 57 passed in 0.79 seconds. Current111d259f report identity was normalized only after final completion/source/tests matched. Bundle and reports are preserved under `/tmp/calibration-*` (ask coordinator for exact paths). Existing scientific reviewer received a verified bundle and re-review run758b92f1. The controller still reports running despite a schema-valid current report; do not invent a completed lifecycle, retry implementation or discard the VM. Source is durable; scientific approval remains pending.
 
 Acquisition safety followup: existing owner run0290d1f6-e309-40cc-9a80-dc6b21ff2593; reviewer amendment run9dd99998-0757-40b3-b922-4c3a461af22f. Native coordinator reproduced raw fd-capture tempfile persistence and raw upstream manifest persistence with static sentinels only: both present during execution, absent after normal cleanup. Redaction must precede persistence. Full-home sentinel scanning caused the local stall; test helpers and decoy config fixtures must use wholly synthetic owned paths and must not read/restore an existing real ~/.eodms/config.ini or scan unrelated home contents. No real authentication was performed.
+
+Integration handoff is durable: eda4c6fb owner run468f02bd completed with current report identity, clean remotely persisted source. Report /tmp/integration-eda4-report.json; 401-test log /tmp/integration-eda4-401-tests.txt; full bundle /tmp/integration-eda4-full.bundle. Existing independent reviewer w-3b91da88 continuation28e83247-82da-4f14-89b6-b508b69b1b70 has verified bundles for exact APIb88/producer8027/setup237/integrationeda4.
+
+Latest API reviewer outcome: exact b88 returned CHANGES_REQUESTED for stale documentation (Pillow optionality and unsupported-root wording), with 308 owned tests and179 independent passes/one platform skip; no functional blocker reported in the brief. Coordinator is preserving report/probes and requesting narrow owner correction plus exact-head re-review. Reviewer final file has a null run ID and detached reviewed checkout, so control-plane handoff repair remains pending; preserve reviewed target and artifacts before restoring assigned reviewer branch.
+
+Acquisition test-fixture followup e4a659d9-012c-4258-8bdf-a17952b5c944 is queued behind active persistence correction0290d1f6. Coordinator will preserve the completed first run before allowing the next fixture turn. No additional source owner.

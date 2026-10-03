@@ -1,15 +1,36 @@
 """Tests for the read-only RADARSAT-2 calibration preflight.
 
-Scope and honesty notes:
+Fixture honesty
+---------------
 
-* Every fixture here is SYNTHETIC and built inside pytest ``tmp_path``. The
-  product XML is a *tiny, hand-written* imitation that reproduces the authentic
-  RADARSAT-2 ``product.xml`` element paths and the CSA sigma0 lookup-table
-  element paths, with obviously-fake values. No real delivered product, no real
-  backscatter, no synthetic stand-in for a real acquisition, and no credentials
-  or network access are involved.
-* These tests assert what the preflight *refuses* to claim. They never assert
-  that a product is georeferenced, calibrated or processed.
+Every fixture is SYNTHETIC, built inside pytest ``tmp_path``, and labelled as
+such. The XML reproduces the real RADARSAT-2 element structure that this
+preflight depends on:
+
+``product.xml``
+
+* ``imageAttributes/rasterAttributes/dataType`` -> ``Mag`` or ``Complex``
+* ``imageAttributes/rasterAttributes/{bitsPerSample, numberOfLines,
+  numberOfSamplesPerLine}``
+* ``imageAttributes/transmitterReceiverPolarisation``
+* ``calibration/.../lookupTable`` where the **filename is the element text** and
+  the lookup dimension is the ``selected`` attribute.
+
+sigma0 lookup table
+
+.. code-block:: xml
+
+    <lut>
+      <offset>SCALAR</offset>
+      <gains>G0 G1 G2 ...</gains>   <!-- one gain per image column -->
+    </lut>
+
+There is deliberately **no** ``gainList``, no ``pol`` element and no
+``incidenceAngle``/``width`` pair: that schema is not what RADARSAT-2 uses and
+this preflight does not parse it.
+
+These tests also assert what the tool must *not* claim: no raw-sample power
+assertion, no SGF driver, no calibration performed.
 """
 
 from __future__ import annotations
@@ -28,167 +49,95 @@ if str(REPO_ROOT) not in sys.path:
 
 from processing import calibration_preflight as cp  # noqa: E402
 
+BANNER = "SYNTHETIC TEST FIXTURE - NOT A REAL RADARSAT-2 PRODUCT"
 
-# ---------------------------------------------------------------------------
-# Synthetic fixtures (tiny, clearly not a real product)
-# ---------------------------------------------------------------------------
-
-SYNTHETIC_BANNER = "SYNTHETIC TEST FIXTURE - NOT A REAL RADARSAT-2 PRODUCT"
-
-# Authentic RADARSAT-2 element paths used below:
-#   product/imageAttributes/{productType, sampleType, bitsPerSample,
-#     numberOfLines, numberOfSamplesPerLine, nearRangeIncidenceAngle,
-#     farRangeIncidenceAngle, transmitterReceiverPolarisation}
-#   product/calibration/calibrationLookupTable/@href
-#   product/calibration/noiseLookupTable/@href
-#   product/imageGeometry/imageTiePoints/...
-PRODUCT_XML_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
-<!-- {banner}. Values are invented for schema testing only. -->
+PRODUCT_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<!-- {banner} -->
 <product xmlns:gml="http://www.opengis.net/gml">
-  <productIdentifier>
-    <name>SYNTHETIC_RS2_TEST_PRODUCT</name>
-  </productIdentifier>
   <imageAttributes>
     <productType>{product_type}</productType>
-    <acquisitionMode>STANDARD</acquisitionMode>
-    <beamMode>IW3</beamMode>
+    <acquisitionType>{acquisition_type}</acquisitionType>
     <transmitterReceiverPolarisation>{pols}</transmitterReceiverPolarisation>
-    <numberOfLines>{lines}</numberOfLines>
-    <numberOfSamplesPerLine>{samples}</numberOfSamplesPerLine>
-    <sampleType>{sample_type}</sampleType>
-    <bitsPerSample>{bits}</bitsPerSample>
-    <nearRangeIncidenceAngle>{near_angle}</nearRangeIncidenceAngle>
-    <farRangeIncidenceAngle>{far_angle}</farRangeIncidenceAngle>
-    <productFirstLineUtcTime>2019-03-17T11:00:12.000000Z</productFirstLineUtcTime>
+    <rasterAttributes>
+      <bitsPerSample>{bits}</bitsPerSample>
+      <numberOfLines>{lines}</numberOfLines>
+      <numberOfSamplesPerLine>{samples}</numberOfSamplesPerLine>
+      <dataType>{data_type}</dataType>
+    </rasterAttributes>
   </imageAttributes>
   <calibration>
-    <calibrationLookupTable href="{lut_href}"/>
-    <noiseLookupTable href="calibration/noise.xml"/>
+    <sigmaZero>
+      <lookupTable selected="{selected}">{lut_name}</lookupTable>
+    </sigmaZero>
   </calibration>
 </product>
 """
 
-# Authentic CSA sigma0 lookup-table element paths used below:
-#   sigmaZeroLookupTable/lut/gainList/gain/{pol, step, incidenceAngle, gain, width}
-#   sigmaZeroLookupTable/lut/offsetList/offset/{pol, step, incidenceAngle, offset}
-SIGMA_LUT_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
-<!-- {banner}. Gains/widths/offsets are invented for schema testing only. -->
-<sigmaZeroLookupTable>
-  <lut>
-    <gainList>
-{gains}
-    </gainList>
-    <offsetList>
-{offsets}
-    </offsetList>
-  </lut>
-</sigmaZeroLookupTable>
+LUT_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<!-- {banner} -->
+<lut>
+  <offset>{offset}</offset>
+  <gains>{gains}</gains>
+</lut>
 """
-
-GAIN_ENTRY = """      <gain>
-        <pol>{pol}</pol>
-        <step>SSG1</step>
-        <incidenceAngle>{angle}</incidenceAngle>
-        <gain>{gain}</gain>
-        <width>{width}</width>
-      </gain>"""
-
-OFFSET_ENTRY = """      <offset>
-        <pol>{pol}</pol>
-        <step>SSG1</step>
-        <incidenceAngle>{angle}</incidenceAngle>
-        <offset>{offset}</offset>
-      </offset>"""
-
-
-def _gain(pol: str, angle: float, gain: float, width: float) -> str:
-    return GAIN_ENTRY.format(pol=pol, angle=angle, gain=gain, width=width)
-
-
-def _offset(pol: str, angle: float, value: float) -> str:
-    return OFFSET_ENTRY.format(pol=pol, angle=angle, offset=value)
-
-
-def write_sigma_lut(
-    path: Path,
-    *,
-    gains: list[str],
-    offsets: list[str] | None = None,
-    body: str | None = None,
-) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if body is None:
-        body = SIGMA_LUT_TEMPLATE.format(
-            banner=SYNTHETIC_BANNER,
-            gains="\n".join(gains),
-            offsets="\n".join(offsets if offsets is not None else []),
-        )
-    path.write_text(body, encoding="utf-8")
-    return path
 
 
 def make_product(
     root: Path,
     *,
-    product_type: str = "SLC",
-    sample_type: str = "COMPLEX_IQ",
-    bits: int | str = 32,
+    product_type: str = "SGX",
+    acquisition_type: str = "L1",
+    data_type: str = "Complex",
+    bits: int | str = 16,
     pols: str = "HH",
-    lines: int | str = 8,
-    samples: int | str = 8,
-    near_angle: float | str = 30.0,
-    far_angle: float | str = 50.0,
-    lut_href: str = "calibration/sigma0.xml",
+    lines: int | str = 4,
+    samples: int | str = 6,
+    lut_name: str = "calibration/sigma0_polarization_HH.xml",
+    selected: str = "incidenceAngleCorrection",
+    offset: str = "1.5",
+    gains: str | None = None,
+    lut_dir: str = "",
     write_lut: bool = True,
-    lut_body: str | None = None,
-    lut_gains: list[str] | None = None,
-    lut_offsets: list[str] | None = None,
+    write_xml: bool = True,
     imagery: dict[str, list[str]] | None = None,
-    write_product_xml: bool = True,
-    product_xml_body: str | None = None,
+    xml_body: str | None = None,
+    lut_body: str | None = None,
 ) -> Path:
-    """Create a synthetic product directory and return its path."""
-    product = root / "SYNTHETIC_RS2_TEST_PRODUCT"
+    product = root / "SYNTHETIC_RS2_PRODUCT"
     product.mkdir(parents=True, exist_ok=True)
 
-    if product_xml_body is None and write_product_xml:
-        product_xml_body = PRODUCT_XML_TEMPLATE.format(
-            banner=SYNTHETIC_BANNER,
+    if write_xml and xml_body is None:
+        xml_body = PRODUCT_XML.format(
+            banner=BANNER,
             product_type=product_type,
-            sample_type=sample_type,
-            bits=bits,
+            acquisition_type=acquisition_type,
             pols=pols,
+            bits=bits,
             lines=lines,
             samples=samples,
-            near_angle=near_angle,
-            far_angle=far_angle,
-            lut_href=lut_href,
+            data_type=data_type,
+            selected=selected,
+            lut_name=lut_name,
         )
-    if product_xml_body is not None:
-        (product / "product.xml").write_text(product_xml_body, encoding="utf-8")
+    if xml_body is not None:
+        (product / "product.xml").write_text(xml_body, encoding="utf-8")
 
-    # Writing the lookup table is implied whenever LUT content is supplied
-    # explicitly, so a test can override entries without disabling the file.
-    if lut_gains is not None or lut_offsets is not None or lut_body is not None:
-        write_lut = True
-
-    if write_lut:
-        gains = lut_gains
-        if gains is None:
-            # Bins of width 20 centred at 30/50 cover [20,60]: the [30,50] span.
-            gains = [_gain("HH", 30.0, 0.62, 20.0), _gain("HH", 50.0, 0.55, 20.0)]
-        write_sigma_lut(
-            product / "calibration" / "sigma0.xml",
-            gains=gains,
-            offsets=lut_offsets
-            if lut_offsets is not None
-            else [_offset("HH", 30.0, 0.0), _offset("HH", 50.0, 0.0)],
-            body=lut_body,
+    # Supplying LUT content implies writing it, so a test can override gains or
+    # use a custom body without having to set write_lut explicitly.
+    if write_lut or lut_body is not None or gains is not None:
+        target = product / (f"{lut_dir}{lut_name}" if lut_dir else lut_name)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            lut_body
+            if lut_body is not None
+            else LUT_XML.format(
+                banner=BANNER,
+                offset=offset if offset is not None else "0",
+                gains=gains if gains is not None else " ".join(["0.5"] * int(samples or 0)),
+            ),
+            encoding="utf-8",
         )
 
-    # Minimal but real TIFF-ish placeholder bytes are not enough for GDAL; the
-    # preflight only requires that the referenced imagery file exists, so a small
-    # deterministic payload is used. ``imagery={}`` means "no imagery at all".
     plan = (
         {"HH": ["imagery/imagery_HH_I.tif", "imagery/imagery_HH_Q.tif"]}
         if imagery is None
@@ -203,694 +152,582 @@ def make_product(
 
 
 def _codes(report: dict) -> set[str]:
-    return {finding["code"] for finding in report["findings"]}
+    return {item["code"] for item in report["findings"]}
 
 
-def _blocking_codes(report: dict) -> set[str]:
-    return {finding["code"] for finding in report["blocking"]}
+def _blocking(report: dict) -> set[str]:
+    return {item["code"] for item in report["blocking"]}
+
+
+def _no_lut(product: Path) -> Path:
+    """Remove the lookup table and keep the reference, for missing-file cases."""
+    for path in product.rglob("*.xml"):
+        if path.name != "product.xml":
+            path.unlink()
+    return product
 
 
 # ---------------------------------------------------------------------------
-# Happy paths
+# Happy path
 # ---------------------------------------------------------------------------
 
 
 def test_synthetic_complex_product_is_ready_for_calibration(tmp_path: Path) -> None:
-    product = make_product(tmp_path)
-
-    report = cp.preflight(product)
+    report = cp.preflight(make_product(tmp_path))
 
     assert report["status"] == "ready_for_calibration"
-    assert report["ready_for_calibration"] is True
     assert report["blocking"] == []
-    assert report["product"]["sample_representation"] == "complex_iq"
-    assert report["product"]["dimensions"] == {"number_of_lines": 8, "number_of_samples_per_line": 8}
-    assert report["product"]["polarizations"] == ["HH"]
-    assert report["sigma_lut"]["contained"] is True
-    assert report["sigma_lut"]["gain_count"] == 2
-    assert report["sigma_lut"]["offset_count"] == 2
+    assert report["product"]["data_type"] == "Complex"
+    assert report["product"]["representation"] == "complex"
+    assert report["product"]["data_type_element_path"] == "imageattributes/rasterattributes/datatype"
+    assert report["sigma_lut"]["offset"] == pytest.approx(1.5)
+    assert report["sigma_lut"]["gain_count"] == 6
+    assert report["sigma_lut"]["covers_raster_width"] is True
+    assert report["sigma_lut"]["lut_element_path"] == "lut"
 
 
-def test_preflight_never_claims_the_product_was_processed(tmp_path: Path) -> None:
-    product = make_product(tmp_path)
+def test_lookup_table_filename_is_element_text_not_an_attribute(tmp_path: Path) -> None:
+    report = cp.preflight(make_product(tmp_path))
 
-    report = cp.preflight(product)
-
+    assert report["product"]["lut_reference_element_path"] == "calibration/sigmazero/lookuptable"
+    assert report["sigma_lut"]["reference"] == "calibration/sigma0_polarization_HH.xml"
+    assert report["product"]["lut_selected"] == "incidenceAngleCorrection"
     assert report["status"] == "ready_for_calibration"
-    assert "verified" not in report["status"]
+
+
+def test_preflight_never_claims_processing_happened(tmp_path: Path) -> None:
+    report = cp.preflight(make_product(tmp_path))
+
     assert report["calibration_performed"] is False
     assert report["geocoding_performed"] is False
     assert report["pixels_read"] is False
     assert report["read_only"] is True
+    assert report["network_used"] is False
+    assert report["credentials_used"] is False
+    assert "verified" not in report["status"]
     assert "ready_for_calibration" in report["semantics"]["statement"]
 
 
-def test_preflight_creates_no_files_in_the_product_directory(tmp_path: Path) -> None:
+def test_preflight_creates_nothing_in_the_product(tmp_path: Path) -> None:
     product = make_product(tmp_path)
+    before = sorted(str(p.relative_to(product)) for p in product.rglob("*"))
 
-    def snapshot() -> list[str]:
-        return sorted(str(p.relative_to(product)) for p in product.rglob("*"))
-
-    before = snapshot()
     cp.preflight(product)
-    after = snapshot()
 
-    assert before == after
+    assert sorted(str(p.relative_to(product)) for p in product.rglob("*")) == before
 
 
 # ---------------------------------------------------------------------------
-# Detected (Mag) versus Complex power semantics
+# Raw source versus calibrated representation: the corrected science
 # ---------------------------------------------------------------------------
 
 
-def test_detected_magnitude_samples_are_already_linear_power(tmp_path: Path) -> None:
-    product = make_product(
-        tmp_path,
-        product_type="SGF",
-        sample_type="MAG",
+def test_raw_mag_dn_is_amplitude_not_power(tmp_path: Path) -> None:
+    report = cp.preflight(make_product(tmp_path, data_type="Mag", bits=16))
+
+    raw = report["representations"]["raw_source"]
+    assert raw["is_power"] is False
+    assert "amplitude" in raw["stored_values"].lower()
+    assert raw["representation"] == "magnitude"
+
+
+def test_mag_calibration_formula_squares_dn_and_divides_by_gain(tmp_path: Path) -> None:
+    report = cp.preflight(make_product(tmp_path, data_type="Mag", bits=16))
+
+    future = report["representations"]["future_calibrated"]
+    assert future["formula"] == "sigma0 = (DN**2 + offset) / gain[column]"
+    assert future["gain_is_applied"] is True
+    assert future["requires_magnitude_squared"] is True
+
+
+def test_complex_formula_includes_gain_and_is_not_bare_magnitude_squared(
+    tmp_path: Path,
+) -> None:
+    report = cp.preflight(make_product(tmp_path, data_type="Complex"))
+
+    future = report["representations"]["future_calibrated"]
+    assert "gain[column]" in future["formula"]
+    assert future["formula"] != "sigma0 = abs(I+jQ)**2"
+    assert future["gain_is_applied"] is True
+    assert "abs(I+jQ)**2 ALONE is not sigma0" in future["note"]
+
+
+def test_calibrated_sigma0_band_is_already_power_and_not_squared_again(
+    tmp_path: Path,
+) -> None:
+    report = cp.preflight(make_product(tmp_path, data_type="Mag", bits=16))
+
+    future = report["representations"]["future_calibrated"]
+    assert future["output_is_power"] is True
+    assert future["square_output_again"] is False
+    assert future["gdal_band_metadata_item"] == "RADARSAT_2_CALIB:SIGMA0"
+
+
+def test_representations_are_separate_and_no_calibration_is_done(tmp_path: Path) -> None:
+    report = cp.preflight(make_product(tmp_path, data_type="Complex"))
+
+    reps = report["representations"]
+    assert reps["calibration_performed_by_this_tool"] is False
+    assert reps["raw_source"]["is_power"] is False
+    assert reps["future_calibrated"]["calibrated"] is False
+    assert reps["raw_source"] is not reps["future_calibrated"]
+
+
+def test_no_representation_rule_when_data_type_is_unknown(tmp_path: Path) -> None:
+    report = cp.preflight(make_product(tmp_path, data_type="Mystery"))
+
+    future = report["representations"]["future_calibrated"]
+    assert future["formula"] is None
+    assert future["gain_is_applied"] is None
+    assert "DATA_TYPE_UNSUPPORTED" in _blocking(report)
+
+
+def test_formula_is_not_claimed_to_be_gdal_verified(tmp_path: Path) -> None:
+    report = cp.preflight(make_product(tmp_path))
+
+    reps = report["representations"]
+    assert reps["formula_verified_against_gdal_source"] is False
+    assert "NOT been verified" in reps["formula_verification_note"]
+
+
+# ---------------------------------------------------------------------------
+# dataType, bits, dimensions, polarizations
+# ---------------------------------------------------------------------------
+
+
+def test_missing_data_type_is_blocked(tmp_path: Path) -> None:
+    body = PRODUCT_XML.format(
+        banner=BANNER,
+        product_type="SGX",
+        acquisition_type="L1",
+        pols="HH",
         bits=16,
-        imagery={"HH": ["imagery/image_HH.tif"]},
-    )
+        lines=4,
+        samples=6,
+        data_type="Complex",
+        selected="incidenceAngleCorrection",
+        lut_name="calibration/sigma0_polarization_HH.xml",
+    ).replace("      <dataType>Complex</dataType>\n", "")
+    report = cp.preflight(make_product(tmp_path, xml_body=body))
 
-    report = cp.preflight(product)
+    assert "DATA_TYPE_MISSING" in _blocking(report)
+
+
+@pytest.mark.parametrize("bits", ["8", "16"])
+def test_mag_accepts_8_and_16_bits(tmp_path: Path, bits: str) -> None:
+    report = cp.preflight(make_product(tmp_path, data_type="Mag", bits=bits))
 
     assert report["status"] == "ready_for_calibration"
-    assert report["product"]["sample_representation"] == "magnitude"
-    output = report["calibration_output"]
-    assert output["expected_band_semantics"] == "linear_power_sigma0"
-    assert output["apply_magnitude_squared"] is False
-    assert "do not square" in output["rule"].lower()
-
-
-def test_complex_samples_require_magnitude_squared(tmp_path: Path) -> None:
-    product = make_product(tmp_path)
-
-    report = cp.preflight(product)
-
-    output = report["calibration_output"]
-    assert report["product"]["sample_representation"] == "complex_iq"
-    assert output["expected_band_semantics"] == "complex_iq_pairs"
-    assert output["apply_magnitude_squared"] is True
-    assert "magnitude" in output["rule"].lower()
-
-
-def test_magnitude_and_complex_do_not_share_a_power_rule(tmp_path: Path) -> None:
-    detected = cp.preflight(
-        make_product(
-            tmp_path / "detected",
-            product_type="SGF",
-            sample_type="MAG",
-            bits=16,
-            imagery={"HH": ["imagery/image_HH.tif"]},
-        )
-    )
-    complex_ = cp.preflight(make_product(tmp_path / "complex"))
-
-    assert (
-        detected["calibration_output"]["expected_band_semantics"]
-        != complex_["calibration_output"]["expected_band_semantics"]
-    )
-
-
-# ---------------------------------------------------------------------------
-# product.xml problems
-# ---------------------------------------------------------------------------
-
-
-def test_missing_product_xml_is_blocked(tmp_path: Path) -> None:
-    product = make_product(tmp_path, write_product_xml=False)
-
-    report = cp.preflight(product)
-
-    assert report["status"] == "blocked"
-    assert "PRODUCT_XML_MISSING" in _blocking_codes(report)
-
-
-def test_unparseable_product_xml_is_blocked(tmp_path: Path) -> None:
-    product = make_product(tmp_path, product_xml_body="<product><unclosed>")
-
-    report = cp.preflight(product)
-
-    assert report["status"] == "blocked"
-    assert "PRODUCT_XML_UNPARSEABLE" in _blocking_codes(report)
-
-
-def test_unknown_sample_type_is_unsupported(tmp_path: Path) -> None:
-    product = make_product(tmp_path, sample_type="WEIRD")
-
-    report = cp.preflight(product)
-
-    assert report["status"] == "blocked"
-    assert "SAMPLE_TYPE_UNSUPPORTED" in _blocking_codes(report)
-
-
-def test_absent_sample_type_is_blocked(tmp_path: Path) -> None:
-    body = PRODUCT_XML_TEMPLATE.format(
-        banner=SYNTHETIC_BANNER,
-        product_type="SLC",
-        sample_type="COMPLEX_IQ",
-        bits=32,
-        pols="HH",
-        lines=8,
-        samples=8,
-        near_angle=30.0,
-        far_angle=50.0,
-        lut_href="calibration/sigma0.xml",
-    ).replace("    <sampleType>COMPLEX_IQ</sampleType>\n", "")
-    product = make_product(tmp_path, product_xml_body=body)
-
-    report = cp.preflight(product)
-
-    assert report["status"] == "blocked"
-    assert "SAMPLE_TYPE_MISSING" in _blocking_codes(report)
 
 
 def test_unsupported_bit_depth_is_blocked(tmp_path: Path) -> None:
-    product = make_product(tmp_path, bits=12)
+    report = cp.preflight(make_product(tmp_path, data_type="Complex", bits=12))
 
-    report = cp.preflight(product)
-
-    assert report["status"] == "blocked"
-    assert "BITS_UNSUPPORTED" in _blocking_codes(report)
-
-
-def test_missing_bit_depth_is_blocked(tmp_path: Path) -> None:
-    body = PRODUCT_XML_TEMPLATE.format(
-        banner=SYNTHETIC_BANNER,
-        product_type="SLC",
-        sample_type="COMPLEX_IQ",
-        bits=32,
-        pols="HH",
-        lines=8,
-        samples=8,
-        near_angle=30.0,
-        far_angle=50.0,
-        lut_href="calibration/sigma0.xml",
-    ).replace("    <bitsPerSample>32</bitsPerSample>\n", "")
-    product = make_product(tmp_path, product_xml_body=body)
-
-    report = cp.preflight(product)
-
-    assert report["status"] == "blocked"
-    assert "BITS_MISSING" in _blocking_codes(report)
+    assert "BITS_UNSUPPORTED" in _blocking(report)
 
 
 @pytest.mark.parametrize("field", ["numberOfLines", "numberOfSamplesPerLine"])
 def test_missing_dimensions_are_blocked(tmp_path: Path, field: str) -> None:
-    body = PRODUCT_XML_TEMPLATE.format(
-        banner=SYNTHETIC_BANNER,
-        product_type="SLC",
-        sample_type="COMPLEX_IQ",
-        bits=32,
+    body = PRODUCT_XML.format(
+        banner=BANNER,
+        product_type="SGX",
+        acquisition_type="L1",
         pols="HH",
-        lines=8,
-        samples=8,
-        near_angle=30.0,
-        far_angle=50.0,
-        lut_href="calibration/sigma0.xml",
+        bits=16,
+        lines=4,
+        samples=6,
+        data_type="Complex",
+        selected="incidenceAngleCorrection",
+        lut_name="calibration/sigma0_polarization_HH.xml",
     )
-    body = "\n".join(
-        line for line in body.splitlines() if f"<{field}>" not in line
-    )
-    product = make_product(tmp_path, product_xml_body=body)
+    body = "\n".join(line for line in body.splitlines() if f"<{field}>" not in line)
+    report = cp.preflight(make_product(tmp_path, xml_body=body))
 
-    report = cp.preflight(product)
-
-    assert report["status"] == "blocked"
-    assert "DIMENSIONS_MISSING" in _blocking_codes(report)
+    assert "DIMENSIONS_MISSING" in _blocking(report)
 
 
 def test_missing_polarizations_are_blocked(tmp_path: Path) -> None:
-    body = PRODUCT_XML_TEMPLATE.format(
-        banner=SYNTHETIC_BANNER,
-        product_type="SLC",
-        sample_type="COMPLEX_IQ",
-        bits=32,
+    body = PRODUCT_XML.format(
+        banner=BANNER,
+        product_type="SGX",
+        acquisition_type="L1",
         pols="HH",
-        lines=8,
-        samples=8,
-        near_angle=30.0,
-        far_angle=50.0,
-        lut_href="calibration/sigma0.xml",
+        bits=16,
+        lines=4,
+        samples=6,
+        data_type="Complex",
+        selected="incidenceAngleCorrection",
+        lut_name="calibration/sigma0_polarization_HH.xml",
     )
     body = "\n".join(
-        line
-        for line in body.splitlines()
-        if "transmitterReceiverPolarisation" not in line
+        line for line in body.splitlines() if "transmitterReceiverPolarisation" not in line
     )
-    product = make_product(tmp_path, product_xml_body=body)
+    report = cp.preflight(make_product(tmp_path, xml_body=body))
 
-    report = cp.preflight(product)
-
-    assert report["status"] == "blocked"
-    assert "POLARIZATIONS_MISSING" in _blocking_codes(report)
+    assert "POLARIZATIONS_MISSING" in _blocking(report)
 
 
 # ---------------------------------------------------------------------------
-# Sigma LUT reference, containment and reading
+# product.xml containment and bounded scan
 # ---------------------------------------------------------------------------
 
 
-def test_absent_sigma_lut_reference_is_blocked(tmp_path: Path) -> None:
-    product = make_product(tmp_path, write_lut=False)
-    body = (product / "product.xml").read_text(encoding="utf-8")
-    body = "\n".join(
-        line for line in body.splitlines() if "calibrationLookupTable" not in line
+def test_product_xml_symlink_escaping_the_product_is_refused(tmp_path: Path) -> None:
+    outside = tmp_path / "outside.xml"
+    outside.write_text("<product/>", encoding="utf-8")
+    product = tmp_path / "SYNTHETIC_RS2_PRODUCT"
+    product.mkdir(parents=True, exist_ok=True)
+    os.symlink(outside, product / "product.xml")
+
+    report = cp.preflight(product)
+
+    assert "PRODUCT_XML_PATH_ESCAPE" in _blocking(report)
+    assert report["product"]["data_type"] is None
+
+
+def test_product_xml_symlink_inside_the_product_is_accepted(tmp_path: Path) -> None:
+    product = make_product(tmp_path, imagery={"HH": []})
+    os.rename(product / "product.xml", product / "real_product.xml")
+    os.symlink(product / "real_product.xml", product / "product.xml")
+
+    report = cp.preflight(product)
+
+    assert report["product"]["data_type"] == "Complex"
+    assert "PRODUCT_XML_PATH_ESCAPE" not in _codes(report)
+
+
+def test_oversized_product_xml_reports_explicit_truncation(tmp_path: Path) -> None:
+    body = PRODUCT_XML.format(
+        banner=BANNER,
+        product_type="SGX",
+        acquisition_type="L1",
+        pols="HH",
+        bits=16,
+        lines=4,
+        samples=6,
+        data_type="Complex",
+        selected="incidenceAngleCorrection",
+        lut_name="calibration/sigma0_polarization_HH.xml",
+    ) + "<!--" + ("x" * 200_000) + "-->"
+    product = make_product(tmp_path, xml_body=body, write_lut=False, imagery={})
+    original = cp.LIMITS["max_product_xml_bytes"]
+    cp.LIMITS["max_product_xml_bytes"] = 1024
+    try:
+        report = cp.preflight(product)
+    finally:
+        cp.LIMITS["max_product_xml_bytes"] = original
+
+    assert "PRODUCT_XML_SCAN_TRUNCATED" in _blocking(report)
+    assert report["product"]["data_type"] is None
+
+
+def test_oversized_lookup_table_reports_explicit_truncation(tmp_path: Path) -> None:
+    product = make_product(tmp_path, write_lut=False, gains="0.5 " * 40000)
+    original = cp.LIMITS["max_lut_bytes"]
+    cp.LIMITS["max_lut_bytes"] = 256
+    try:
+        report = cp.preflight(product)
+    finally:
+        cp.LIMITS["max_lut_bytes"] = original
+
+    assert "LUT_SCAN_TRUNCATED" in _blocking(report)
+    assert report["sigma_lut"]["status"] == "truncated"
+    assert report["sigma_lut"]["gain_count"] == 0
+
+
+def test_missing_product_xml_is_blocked(tmp_path: Path) -> None:
+    product = tmp_path / "SYNTHETIC_RS2_PRODUCT"
+    product.mkdir(parents=True)
+
+    report = cp.preflight(product)
+
+    assert "PRODUCT_XML_MISSING" in _blocking(report)
+
+
+def test_unparseable_product_xml_is_blocked(tmp_path: Path) -> None:
+    report = cp.preflight(make_product(tmp_path, xml_body="<product><oops>"))
+
+    assert "PRODUCT_XML_UNPARSEABLE" in _blocking(report)
+
+
+# ---------------------------------------------------------------------------
+# Lookup-table reference containment
+# ---------------------------------------------------------------------------
+
+
+def test_missing_lookup_table_reference_is_blocked(tmp_path: Path) -> None:
+    body = PRODUCT_XML.format(
+        banner=BANNER,
+        product_type="SGX",
+        acquisition_type="L1",
+        pols="HH",
+        bits=16,
+        lines=4,
+        samples=6,
+        data_type="Complex",
+        selected="incidenceAngleCorrection",
+        lut_name="calibration/sigma0_polarization_HH.xml",
     )
-    (product / "product.xml").write_text(body, encoding="utf-8")
+    body = "\n".join(line for line in body.splitlines() if "lookupTable" not in line)
+    report = cp.preflight(make_product(tmp_path, xml_body=body))
+
+    assert "LUT_REFERENCE_MISSING" in _blocking(report)
+
+
+def test_referenced_lookup_table_absent_is_blocked(tmp_path: Path) -> None:
+    product = _no_lut(make_product(tmp_path))
 
     report = cp.preflight(product)
 
-    assert report["status"] == "blocked"
-    assert "SIGMA_LUT_REFERENCE_MISSING" in _blocking_codes(report)
-
-
-def test_referenced_sigma_lut_file_absent_is_blocked(tmp_path: Path) -> None:
-    product = make_product(tmp_path, write_lut=False)
-
-    report = cp.preflight(product)
-
-    assert report["status"] == "blocked"
-    assert "SIGMA_LUT_MISSING" in _blocking_codes(report)
-    assert report["sigma_lut"]["parse_status"] == "missing"
+    assert "LUT_MISSING" in _blocking(report)
+    assert report["sigma_lut"]["status"] == "missing"
 
 
 @pytest.mark.parametrize(
-    "hostile_href",
-    [
-        "../../../../etc/passwd",
-        "/etc/passwd",
-        "calibration/../../escape/sigma0.xml",
-    ],
+    "hostile", ["../../../../etc/passwd", "/etc/passwd", "calibration/../../escape/x.xml"]
 )
-def test_sigma_lut_reference_escaping_the_product_is_refused(
-    tmp_path: Path, hostile_href: str
+def test_lookup_table_reference_escaping_the_product_is_refused(
+    tmp_path: Path, hostile: str
 ) -> None:
-    product = make_product(tmp_path, write_lut=False, lut_href=hostile_href)
+    product = make_product(tmp_path, lut_name=hostile, write_lut=False, imagery={"HH": []})
 
     report = cp.preflight(product)
 
-    assert report["status"] == "blocked"
-    assert "SIGMA_LUT_PATH_ESCAPE" in _blocking_codes(report)
-    assert report["sigma_lut"]["contained"] is False
-    # The hostile target must never have been read.
-    assert report["sigma_lut"]["parse_status"] == "not_attempted"
+    assert "LUT_PATH_ESCAPE" in _blocking(report)
+    assert report["sigma_lut"]["status"] == "refused"
+    assert report["sigma_lut"]["gain_count"] == 0
 
 
-def test_symlinked_sigma_lut_pointing_outside_the_product_is_refused(tmp_path: Path) -> None:
+def test_lookup_table_symlink_outside_the_product_is_refused(tmp_path: Path) -> None:
     outside = tmp_path / "outside" / "sigma0.xml"
-    write_sigma_lut(outside, gains=[_gain("HH", 40.0, 0.5, 40.0)])
-    product = make_product(tmp_path, write_lut=False)
-    link = product / "calibration" / "sigma0.xml"
-    link.parent.mkdir(parents=True, exist_ok=True)
-    os.symlink(outside, link)
+    outside.parent.mkdir(parents=True)
+    outside.write_text(LUT_XML.format(banner=BANNER, offset="1", gains="0.5 0.5"), encoding="utf-8")
+    product = make_product(tmp_path, write_lut=False, imagery={"HH": []})
+    (product / "calibration").mkdir(parents=True, exist_ok=True)
+    os.symlink(outside, product / "calibration" / "sigma0_polarization_HH.xml")
 
     report = cp.preflight(product)
 
-    assert report["status"] == "blocked"
-    assert "SIGMA_LUT_PATH_ESCAPE" in _blocking_codes(report)
-    assert report["sigma_lut"]["parse_status"] == "not_attempted"
+    assert "LUT_PATH_ESCAPE" in _blocking(report)
 
 
-def test_symlinked_sigma_lut_inside_the_product_is_accepted(tmp_path: Path) -> None:
-    product = make_product(tmp_path, write_lut=False)
-    real = product / "calibration" / "real_sigma0.xml"
-    write_sigma_lut(
-        real,
-        gains=[_gain("HH", 30.0, 0.62, 20.0), _gain("HH", 50.0, 0.55, 20.0)],
-        offsets=[_offset("HH", 30.0, 0.0), _offset("HH", 50.0, 0.0)],
-    )
-    os.symlink(real, product / "calibration" / "sigma0.xml")
+def test_corrupt_lookup_table_is_blocked(tmp_path: Path) -> None:
+    product = make_product(tmp_path, lut_body="<lut><offset>1")
 
     report = cp.preflight(product)
 
-    assert report["status"] == "ready_for_calibration"
-    assert report["sigma_lut"]["contained"] is True
-    assert report["sigma_lut"]["gain_count"] == 2
+    assert "LUT_CORRUPT" in _blocking(report)
+    assert report["sigma_lut"]["status"] == "corrupt"
 
 
-def test_absolute_symlinked_calibration_directory_is_refused(tmp_path: Path) -> None:
-    outside = tmp_path / "outside_lut_dir"
-    write_sigma_lut(
-        outside / "sigma0.xml",
-        gains=[_gain("HH", 40.0, 0.5, 40.0)],
-        offsets=[_offset("HH", 40.0, 0.0)],
-    )
-    product = make_product(tmp_path, write_lut=False)
-    os.symlink(outside, product / "calibration")
+def test_lookup_table_without_lut_element_is_blocked(tmp_path: Path) -> None:
+    product = make_product(tmp_path, lut_body="<other><offset>1</offset></other>")
 
     report = cp.preflight(product)
 
-    assert report["status"] == "blocked"
-    assert "SIGMA_LUT_PATH_ESCAPE" in _blocking_codes(report)
-
-
-def test_corrupt_sigma_lut_is_blocked(tmp_path: Path) -> None:
-    product = make_product(tmp_path, lut_body="<sigmaZeroLookupTable><lut>")
-
-    report = cp.preflight(product)
-
-    assert report["status"] == "blocked"
-    assert "SIGMA_LUT_CORRUPT" in _blocking_codes(report)
-    assert report["sigma_lut"]["parse_status"] == "corrupt"
-
-
-def test_empty_sigma_lut_is_blocked(tmp_path: Path) -> None:
-    body = SIGMA_LUT_TEMPLATE.format(banner=SYNTHETIC_BANNER, gains="", offsets="")
-    product = make_product(tmp_path, lut_body=body)
-
-    report = cp.preflight(product)
-
-    assert report["status"] == "blocked"
-    assert "SIGMA_LUT_NO_ENTRIES" in _blocking_codes(report)
+    assert "LUT_NO_LUT_ELEMENT" in _blocking(report)
 
 
 # ---------------------------------------------------------------------------
-# Sigma LUT numeric gates
+# Lookup-table numerics
 # ---------------------------------------------------------------------------
-
-
-def test_non_finite_gain_is_blocked(tmp_path: Path) -> None:
-    product = make_product(
-        tmp_path,
-        write_lut=False,
-        lut_gains=[_gain("HH", 30.0, "NaN", 20.0), _gain("HH", 50.0, 0.55, 20.0)],
-    )
-
-    report = cp.preflight(product)
-
-    assert report["status"] == "blocked"
-    assert "SIGMA_LUT_GAIN_NOT_FINITE" in _blocking_codes(report)
-
-
-def test_infinite_gain_is_blocked(tmp_path: Path) -> None:
-    product = make_product(
-        tmp_path,
-        write_lut=False,
-        lut_gains=[_gain("HH", 30.0, "INF", 20.0), _gain("HH", 50.0, 0.55, 20.0)],
-    )
-
-    report = cp.preflight(product)
-
-    assert "SIGMA_LUT_GAIN_NOT_FINITE" in _blocking_codes(report)
-
-
-def test_zero_gain_is_blocked(tmp_path: Path) -> None:
-    product = make_product(
-        tmp_path,
-        write_lut=False,
-        lut_gains=[_gain("HH", 30.0, 0.0, 20.0), _gain("HH", 50.0, 0.55, 20.0)],
-    )
-
-    report = cp.preflight(product)
-
-    assert "SIGMA_LUT_GAIN_NOT_POSITIVE" in _blocking_codes(report)
-
-
-def test_negative_gain_is_blocked(tmp_path: Path) -> None:
-    product = make_product(
-        tmp_path,
-        write_lut=False,
-        lut_gains=[_gain("HH", 30.0, -0.2, 20.0), _gain("HH", 50.0, 0.55, 20.0)],
-    )
-
-    report = cp.preflight(product)
-
-    assert "SIGMA_LUT_GAIN_NOT_POSITIVE" in _blocking_codes(report)
 
 
 def test_non_finite_offset_is_blocked(tmp_path: Path) -> None:
-    product = make_product(
-        tmp_path,
-        write_lut=False,
-        lut_offsets=[_offset("HH", 30.0, "nan"), _offset("HH", 50.0, 0.0)],
-    )
+    report = cp.preflight(make_product(tmp_path, offset="nan"))
 
-    report = cp.preflight(product)
+    assert "LUT_OFFSET_NOT_FINITE" in _blocking(report)
+    assert report["sigma_lut"]["offset_finite"] is False
 
-    assert report["status"] == "blocked"
-    assert "SIGMA_LUT_OFFSET_NOT_FINITE" in _blocking_codes(report)
+
+def test_infinite_offset_is_blocked(tmp_path: Path) -> None:
+    report = cp.preflight(make_product(tmp_path, offset="INF"))
+
+    assert "LUT_OFFSET_NOT_FINITE" in _blocking(report)
 
 
 def test_zero_offset_is_accepted(tmp_path: Path) -> None:
-    product = make_product(
-        tmp_path,
-        write_lut=False,
-        lut_offsets=[_offset("HH", 30.0, "0"), _offset("HH", 50.0, "0.0")],
-    )
+    report = cp.preflight(make_product(tmp_path, offset="0"))
 
-    report = cp.preflight(product)
-
-    assert report["status"] == "ready_for_calibration"
     assert report["sigma_lut"]["offset_finite"] is True
+    assert report["status"] == "ready_for_calibration"
 
 
-def test_gain_missing_for_a_declared_polarization_is_blocked(tmp_path: Path) -> None:
-    product = make_product(
-        tmp_path,
-        pols="HH HV",
-        write_lut=False,
-        lut_gains=[_gain("HH", 30.0, 0.62, 20.0), _gain("HH", 50.0, 0.55, 20.0)],
-        lut_offsets=[_offset("HH", 30.0, 0.0), _offset("HH", 50.0, 0.0)],
-        imagery={"HH": ["imagery/imagery_HH_I.tif"], "HV": ["imagery/imagery_HV_I.tif"]},
-    )
+def test_non_finite_gain_is_blocked(tmp_path: Path) -> None:
+    report = cp.preflight(make_product(tmp_path, gains="0.5 0.6 nan 0.8 0.9 1.0"))
 
-    report = cp.preflight(product)
-
-    assert report["status"] == "blocked"
-    assert "SIGMA_LUT_NO_GAIN_FOR_POL" in _blocking_codes(report)
-    assert "HV" in str(report["sigma_lut"]["poles_without_gains"])
+    assert "LUT_GAINS_NOT_FINITE" in _blocking(report)
+    assert report["sigma_lut"]["non_finite_gain_count"] == 1
 
 
-def test_width_coverage_gap_is_blocked(tmp_path: Path) -> None:
-    # Bins centred at 30 and 50, each 20 wide, cover [20, 40] and [40, 60].
-    # The product declares a required span of [30, 55] -> still covered, so
-    # instead declare [20, 60] exactly and shrink one bin to open a gap.
-    product = make_product(
-        tmp_path,
-        near_angle=20.0,
-        far_angle=60.0,
-        write_lut=False,
-        lut_gains=[_gain("HH", 30.0, 0.62, 10.0), _gain("HH", 50.0, 0.55, 10.0)],
-    )
+def test_infinite_gain_is_blocked(tmp_path: Path) -> None:
+    report = cp.preflight(make_product(tmp_path, gains="0.5 0.6 inf 0.8 0.9 1.0"))
 
-    report = cp.preflight(product)
-
-    assert report["status"] == "blocked"
-    assert "SIGMA_LUT_WIDTH_COVERAGE_GAP" in _blocking_codes(report)
-    assert report["sigma_lut"]["width_coverage"]["covered"] is False
-    assert report["sigma_lut"]["width_coverage"]["uncovered_ranges"]
+    assert "LUT_GAINS_NOT_FINITE" in _blocking(report)
 
 
-def test_width_coverage_is_reported_per_polarization(tmp_path: Path) -> None:
-    product = make_product(
-        tmp_path,
-        pols="HH HV",
-        write_lut=False,
-        lut_gains=[
-            _gain("HH", 30.0, 0.62, 20.0),
-            _gain("HH", 50.0, 0.55, 20.0),
-            _gain("HV", 30.0, 0.61, 4.0),
-            _gain("HV", 50.0, 0.54, 4.0),
-        ],
-        lut_offsets=[_offset("HH", 30.0, 0.0), _offset("HV", 30.0, 0.0)],
-        imagery={"HH": ["imagery/imagery_HH_I.tif"], "HV": ["imagery/imagery_HV_I.tif"]},
-    )
+def test_zero_gain_is_blocked(tmp_path: Path) -> None:
+    report = cp.preflight(make_product(tmp_path, gains="0.5 0.6 0.0 0.8 0.9 1.0"))
 
-    report = cp.preflight(product)
-
-    assert report["sigma_lut"]["width_coverage"]["per_polarization"]["HH"]["covered"] is True
-    assert report["sigma_lut"]["width_coverage"]["per_polarization"]["HV"]["covered"] is False
-    assert "SIGMA_LUT_WIDTH_COVERAGE_GAP" in _blocking_codes(report)
+    assert "LUT_GAINS_NOT_POSITIVE" in _blocking(report)
+    assert report["sigma_lut"]["non_positive_gain_count"] == 1
 
 
-def test_absent_incidence_range_downgrades_coverage_to_unknown(tmp_path: Path) -> None:
-    body = PRODUCT_XML_TEMPLATE.format(
-        banner=SYNTHETIC_BANNER,
-        product_type="SLC",
-        sample_type="COMPLEX_IQ",
-        bits=32,
+def test_negative_gain_is_blocked(tmp_path: Path) -> None:
+    report = cp.preflight(make_product(tmp_path, gains="0.5 0.6 -0.2 0.8 0.9 1.0"))
+
+    assert "LUT_GAINS_NOT_POSITIVE" in _blocking(report)
+
+
+def test_unparseable_gain_is_blocked(tmp_path: Path) -> None:
+    report = cp.preflight(make_product(tmp_path, gains="0.5 0.6 abc 0.8 0.9 1.0"))
+
+    assert "LUT_GAINS_UNPARSEABLE" in _blocking(report)
+
+
+def test_gain_list_shorter_than_raster_width_is_blocked(tmp_path: Path) -> None:
+    report = cp.preflight(make_product(tmp_path, samples=6, gains="0.5 0.6 0.7"))
+
+    assert "LUT_GAINS_DO_NOT_COVER_WIDTH" in _blocking(report)
+    assert report["sigma_lut"]["covers_raster_width"] is False
+    assert "columns 3..5" in str(report["findings"])
+
+
+def test_gain_list_longer_than_raster_width_is_accepted(tmp_path: Path) -> None:
+    report = cp.preflight(make_product(tmp_path, samples=6, gains=" ".join(["0.5"] * 10)))
+
+    assert report["sigma_lut"]["covers_raster_width"] is True
+    assert report["status"] == "ready_for_calibration"
+
+
+def test_gain_coverage_is_unknown_when_width_is_unknown(tmp_path: Path) -> None:
+    body = PRODUCT_XML.format(
+        banner=BANNER,
+        product_type="SGX",
+        acquisition_type="L1",
         pols="HH",
-        lines=8,
-        samples=8,
-        near_angle=30.0,
-        far_angle=50.0,
-        lut_href="calibration/sigma0.xml",
+        bits=16,
+        lines=4,
+        samples=6,
+        data_type="Complex",
+        selected="incidenceAngleCorrection",
+        lut_name="calibration/sigma0_polarization_HH.xml",
     )
     body = "\n".join(
-        line
-        for line in body.splitlines()
-        if "RangeIncidenceAngle" not in line
+        line for line in body.splitlines() if "numberOfSamplesPerLine" not in line
     )
-    product = make_product(tmp_path, product_xml_body=body)
+    report = cp.preflight(make_product(tmp_path, xml_body=body))
+
+    assert report["sigma_lut"]["covers_raster_width"] is None
+    assert "WIDTH_UNKNOWN" in _codes(report)
+    assert "WIDTH_UNKNOWN" not in _blocking(report)
+
+
+def test_no_incidence_angle_or_width_schema_is_parsed(tmp_path: Path) -> None:
+    # A gainList/pol/incidenceAngle/width document is NOT the RADARSAT-2 schema.
+    body = """<?xml version="1.0" encoding="UTF-8"?>
+    <lut>
+      <gainList>
+        <gain><pol>HH</pol><incidenceAngle>30</incidenceAngle>
+        <gain>0.5</gain><width>10</width></gain>
+      </gainList>
+      <offset>1</offset>
+    </lut>"""
+    product = make_product(tmp_path, lut_body=body, write_lut=False)
 
     report = cp.preflight(product)
 
-    coverage = report["sigma_lut"]["width_coverage"]
-    assert coverage["required_range"] is None
-    assert coverage["evaluated"] is False
-    assert "INCIDENCE_RANGE_MISSING" in _codes(report)
-    assert "INCIDENCE_RANGE_MISSING" not in _blocking_codes(report)
-
-
-def test_width_semantics_convention_is_recorded(tmp_path: Path) -> None:
-    product = make_product(tmp_path)
-
-    report = cp.preflight(product)
-
-    coverage = report["sigma_lut"]["width_coverage"]
-    assert coverage["convention"] == "bin-width"
-    assert coverage["convention_verified_against_real_product"] is False
+    assert report["sigma_lut"]["gain_count"] == 0
+    assert "LUT_GAINS_UNPARSEABLE" in _blocking(report)
 
 
 # ---------------------------------------------------------------------------
-# Imagery existence
+# Imagery
 # ---------------------------------------------------------------------------
 
 
 def test_missing_imagery_for_a_polarization_is_blocked(tmp_path: Path) -> None:
     product = make_product(
-        tmp_path,
-        pols="HH HV",
-        write_lut=False,
-        lut_gains=[
-            _gain("HH", 30.0, 0.62, 20.0),
-            _gain("HH", 50.0, 0.55, 20.0),
-            _gain("HV", 30.0, 0.61, 20.0),
-            _gain("HV", 50.0, 0.54, 20.0),
-        ],
-        lut_offsets=[_offset("HH", 30.0, 0.0), _offset("HV", 30.0, 0.0)],
-        imagery={"HH": ["imagery/imagery_HH_I.tif"]},
+        tmp_path, pols="HH HV", imagery={"HH": ["imagery/imagery_HH_I.tif"]}
     )
 
     report = cp.preflight(product)
 
-    assert report["status"] == "blocked"
-    assert "IMAGERY_MISSING_FOR_POL" in _blocking_codes(report)
+    assert "IMAGERY_MISSING_FOR_POL" in _blocking(report)
     assert report["imagery"]["missing_polarizations"] == ["HV"]
 
 
-def test_no_imagery_at_all_is_blocked(tmp_path: Path) -> None:
-    product = make_product(tmp_path, imagery={})
-
-    report = cp.preflight(product)
-
-    assert "IMAGERY_MISSING_FOR_POL" in _blocking_codes(report)
-
-
-def test_complex_polarization_is_split_into_i_and_q_pairs(tmp_path: Path) -> None:
-    product = make_product(
-        tmp_path,
-        imagery={"HH": ["imagery/imagery_HH_I.tif", "imagery/imagery_HH_Q.tif"]},
-    )
-
-    report = cp.preflight(product)
-
-    assert report["status"] == "ready_for_calibration"
-    entry = report["imagery"]["by_polarization"]["HH"]
-    assert entry["files"] == [
-        "imagery/imagery_HH_I.tif",
-        "imagery/imagery_HH_Q.tif",
-    ]
-    assert entry["components"] == ["I", "Q"]
-
-
-def test_complex_polarization_missing_one_component_is_flagged(tmp_path: Path) -> None:
+def test_complex_polarization_missing_quadrature_is_flagged(tmp_path: Path) -> None:
     product = make_product(tmp_path, imagery={"HH": ["imagery/imagery_HH_I.tif"]})
 
     report = cp.preflight(product)
 
-    assert "IMAGERY_INCOMPLETE_FOR_POL" in _blocking_codes(report)
+    assert "IMAGERY_INCOMPLETE_FOR_POL" in _blocking(report)
 
 
-def test_oversized_sigma_lut_is_refused_without_parsing(tmp_path: Path) -> None:
-    product = make_product(tmp_path)
-
-    report = cp.preflight(product, max_lut_bytes=16)
-
-    assert report["status"] == "blocked"
-    assert "SIGMA_LUT_TOO_LARGE" in _blocking_codes(report)
-    assert report["sigma_lut"]["parse_status"] == "too_large"
-    assert report["sigma_lut"]["gain_count"] == 0
+# ---------------------------------------------------------------------------
+# Drivers: RS2 is the driver; SGF/CGX are not; RCM is separate
+# ---------------------------------------------------------------------------
 
 
-def test_expected_driver_identity_is_reported_for_the_declared_product_type(
-    tmp_path: Path,
-) -> None:
-    # A dedicated-driver product type reports the driver name plus its measured
-    # presence; a type needing no special driver reports no route at all.
-    sgf = cp.preflight(
-        make_product(tmp_path / "a", product_type="SGF", sample_type="MAG", bits=16)
+def test_rs2_driver_is_measured_from_the_real_gdal_registry() -> None:
+    capabilities = cp.gdal_driver_capabilities()
+
+    rs2 = capabilities["drivers"]["RS2"]
+    assert rs2["present"] is True, (
+        "the RS2 driver must be measured as present; rasterio's filtered driver list "
+        "hid it and this probe uses the full libgdal registry instead"
     )
-    scc = cp.preflight(make_product(tmp_path / "b"))
-
-    sgf_caps = sgf["gdal_capabilities"]
-    assert sgf_caps["expected_driver_for_product_type"] == "SGF"
-    assert sgf_caps["expected_driver_present"] == sgf_caps["drivers"]["SGF"]["present"]
-    assert scc["gdal_capabilities"]["expected_driver_for_product_type"] is None
-    assert scc["gdal_capabilities"]["expected_driver_present"] is None
+    assert capabilities["delivered_product_driver"] == "RS2"
+    assert capabilities["gdal_version"]
 
 
-def test_invalid_width_semantics_is_rejected(tmp_path: Path) -> None:
-    product = make_product(tmp_path)
-
-    with pytest.raises(ValueError):
-        cp.preflight(product, width_semantics="guess")
-
-
-# ---------------------------------------------------------------------------
-# GDAL driver capability: measured, never assumed
-# ---------------------------------------------------------------------------
-
-
-def test_gdal_capabilities_are_measured_from_the_installed_gdal() -> None:
+def test_sgf_and_cgx_are_recorded_as_not_the_rs2_driver() -> None:
     capabilities = cp.gdal_driver_capabilities()
 
-    assert capabilities["probe_source"]
-    assert set(capabilities["drivers"]).issuperset({"SGF", "CGX", "GTiff"})
-    for name, record in capabilities["drivers"].items():
-        assert isinstance(record["present"], bool), name
-    if capabilities.get("gdal_version"):
-        assert capabilities["gdal_version"]
+    assert capabilities["not_the_rs2_driver"] == ["SGF", "CGX"]
+    for name in ("SGF", "CGX"):
+        assert capabilities["drivers"][name]["present"] is False
+        assert capabilities["drivers"][name]["route_claimed"] is False
 
 
-def test_sgf_presence_matches_the_actual_gdal_registry() -> None:
+def test_rcm_is_reported_as_a_separate_driver_not_a_fallback() -> None:
     capabilities = cp.gdal_driver_capabilities()
-    truth = capabilities["drivers"]["SGF"]["present"]
 
-    if not truth:
-        # No SGF driver here: the preflight must say so and must not fabricate
-        # a route, and must not call SGF ScanSAR or geocoded.
-        assert capabilities["drivers"]["SGF"]["route_claimed"] is False
-        assert "not available" in capabilities["drivers"]["SGF"]["note"].lower() or (
-            "absent" in capabilities["drivers"]["SGF"]["note"].lower()
-        )
+    separate = capabilities["separate_driver"]
+    assert separate["name"] == "RCM"
+    assert "separate" in separate["relationship"]
+    assert "not mixed" in separate["relationship"]
 
 
-def test_preflight_never_claims_sgf_is_scansar_or_geocoded(tmp_path: Path) -> None:
-    product = make_product(tmp_path, product_type="SGF", sample_type="MAG", bits=16)
+def test_product_type_is_never_used_as_a_driver_name(tmp_path: Path) -> None:
+    report = cp.preflight(make_product(tmp_path, product_type="SGX"))
 
-    report = cp.preflight(product)
+    capabilities = report["gdal_capabilities"]
+    assert "productType" in capabilities["product_type_is_not_a_driver"]
+    assert "never used to infer a" in capabilities["product_type_is_not_a_driver"]
+    assert "SGX" not in {item["code"] for item in report["findings"]}
 
-    sgf = report["gdal_capabilities"]["drivers"]["SGF"]
-    assert sgf.get("scansar") is None
-    assert sgf.get("geocoded") is None
+
+def test_gdal_calib_domain_constants_are_the_verified_ones() -> None:
+    assert cp.DELIVERED_PRODUCT_DRIVER == "RS2"
+    assert cp.SEPARATE_DRIVER == "RCM"
+    assert cp.NOT_THE_RS2_DRIVER == ("SGF", "CGX")
+
+
+def test_report_never_claims_sgf_is_the_route(tmp_path: Path) -> None:
+    report = cp.preflight(make_product(tmp_path))
     blob = json.dumps(report).lower()
-    for forbidden in ("sgf is scansar", "sgf is geocoded", "sgf is ground range detected"):
-        assert forbidden not in blob
+
+    assert "sgf is the driver" not in blob
+    assert "sgf driver is present" not in blob
 
 
-def test_driver_route_is_never_forced_when_the_driver_is_absent(tmp_path: Path) -> None:
-    product = make_product(tmp_path, product_type="SGF", sample_type="MAG", bits=16)
+def test_probe_source_names_the_full_registry_not_a_filtered_list() -> None:
+    capabilities = cp.gdal_driver_capabilities()
 
-    strict = cp.preflight(product, require_gdal_driver=True)
-    lenient = cp.preflight(product, require_gdal_driver=False)
-
-    if not cp.gdal_driver_capabilities()["drivers"]["SGF"]["present"]:
-        assert strict["status"] == "blocked"
-        assert "GDAL_DRIVER_UNAVAILABLE" in _blocking_codes(strict)
-        assert lenient["status"] != "blocked"
-        assert "GDAL_DRIVER_UNAVAILABLE" in _codes(lenient)
+    assert capabilities["probe_is_measurement"] is True
+    assert "full GDAL driver registry" in capabilities["probe_source"]
 
 
 # ---------------------------------------------------------------------------
@@ -898,19 +735,12 @@ def test_driver_route_is_never_forced_when_the_driver_is_absent(tmp_path: Path) 
 # ---------------------------------------------------------------------------
 
 
-def test_cli_emits_json_and_reports_blocked_status(tmp_path: Path) -> None:
-    product = make_product(tmp_path, lut_body="<broken>")
-    out = tmp_path / "preflight.json"
+def test_cli_writes_json_outside_the_product(tmp_path: Path) -> None:
+    product = make_product(tmp_path)
+    out = tmp_path / "report.json"
 
     completed = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "processing.calibration_preflight",
-            str(product),
-            "--out",
-            str(out),
-        ],
+        [sys.executable, "-m", "processing.calibration_preflight", str(product), "--out", str(out)],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -918,10 +748,26 @@ def test_cli_emits_json_and_reports_blocked_status(tmp_path: Path) -> None:
 
     assert completed.returncode == 0, completed.stderr
     payload = json.loads(out.read_text(encoding="utf-8"))
-    assert payload["status"] == "blocked"
     assert payload["tool"] == "processing.calibration_preflight"
     assert payload["network_used"] is False
     assert payload["credentials_used"] is False
+    assert not out.is_relative_to(product)
+
+
+def test_cli_refuses_to_write_inside_the_product_directory(tmp_path: Path) -> None:
+    product = make_product(tmp_path)
+    out = product / "report.json"
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "processing.calibration_preflight", str(product), "--out", str(out)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    assert "inside the read-only product directory" in completed.stderr
+    assert not out.exists()
 
 
 def test_cli_returns_nonzero_for_a_missing_directory(tmp_path: Path) -> None:
@@ -937,8 +783,6 @@ def test_cli_returns_nonzero_for_a_missing_directory(tmp_path: Path) -> None:
 
 
 def test_report_is_json_serialisable(tmp_path: Path) -> None:
-    product = make_product(tmp_path)
+    report = cp.preflight(make_product(tmp_path))
 
-    report = cp.preflight(product)
-
-    json.dumps(report)  # must not raise
+    json.dumps(report)

@@ -1,202 +1,208 @@
 # Calibration preflight (RADARSAT-2)
 
-Read-only gate that answers one question about a product directory that already
-exists on disk:
+Read-only gate answering one question about a product directory already on disk:
 
-> Is this directory internally complete and self-consistent enough for a
-> radiometric calibration step to be *attempted*?
+> Are the inputs for a radiometric calibration step present, contained and sane?
 
-Implemented in `processing/calibration_preflight.py`, tested in
-`tests/processing/test_calibration_preflight.py`.
+`processing/calibration_preflight.py`, tests in
+`tests/processing/test_calibration_preflight.py`. Version 2.0.0 corrects the
+schema and the radiometry of version 1.x (see
+[Corrections in this revision](#corrections-in-this-revision)).
 
 ```
 python -m processing.calibration_preflight /path/to/RS2_PRODUCT_DIR
-python -m processing.calibration_preflight /path/to/RS2_PRODUCT_DIR --out preflight.json
-python -m processing.calibration_preflight /path/to/RS2_PRODUCT_DIR --require-gdal-driver
+python -m processing.calibration_preflight /path/to/RS2_PRODUCT_DIR --out report.json
 ```
 
 ## What it is not
 
-* It is **not** calibration. No gains are applied, no offset is subtracted, no
-  backscatter is produced.
-* It is **not** geocoding, orthorectification, reprojection, terrain correction,
-  coregistration or speckle filtering.
-* It is **not** change detection, and it makes no persistence, historical
-  anomaly, deforestation, fire or causal claim of any kind.
-* It does **not** read a single pixel. Imagery is checked for *existence only*.
-* It does **not** return `"verified"`, `"processed"` or `"calibrated"`. The
-  strongest status it can return is `ready_for_calibration`.
-
-`status` is one of:
+* **No calibration is performed.** No gain is applied, no offset subtracted, no
+  backscatter produced, no pixel read.
+* No geocoding, orthorectification, reprojection, terrain correction or speckle
+  filtering. No change detection, and no persistence, historical, deforestation,
+  fire or causal claim of any kind.
+* It never returns `"verified"`, `"processed"` or `"calibrated"`. The strongest
+  status is `ready_for_calibration`.
 
 | status | meaning |
 | --- | --- |
-| `ready_for_calibration` | Calibration *inputs* (metadata, lookup table, imagery references) were found present, contained and numerically sane. A calibration step may be attempted. |
-| `blocked` | At least one required input is missing, unsupported or corrupt. Every reason is listed individually in `blocking`, each with a stable `code`. |
+| `ready_for_calibration` | Calibration **inputs** were found present, contained and numerically sane. A calibration step *may be attempted*. |
+| `blocked` | Something is missing, unsupported, corrupt or truncated. Every reason is listed individually in `blocking`. |
 
-Anything the tool does not know stays unknown. There are no confidence
-percentages and no inferred values.
+## Schema actually parsed
 
-## Checks performed
+`product.xml`, matched by namespace-independent local name:
 
-| Area | Findings |
+| path | use |
 | --- | --- |
-| `product.xml` | `PRODUCT_XML_MISSING`, `PRODUCT_XML_UNREADABLE`, `PRODUCT_XML_UNPARSEABLE`, `PRODUCT_XML_TOO_LARGE` |
-| Sample type | `SAMPLE_TYPE_MISSING`, `SAMPLE_TYPE_UNSUPPORTED` |
-| Bit depth | `BITS_MISSING`, `BITS_UNSUPPORTED` |
-| Dimensions | `DIMENSIONS_MISSING` |
-| Polarizations | `POLARIZATIONS_MISSING` |
-| Incidence span | `INCIDENCE_RANGE_MISSING` (advisory, non-blocking) |
-| LUT reference | `SIGMA_LUT_REFERENCE_MISSING` |
-| LUT containment | `SIGMA_LUT_PATH_ESCAPE` (blocking; nothing is read) |
-| LUT presence | `SIGMA_LUT_MISSING` |
-| LUT readability | `SIGMA_LUT_CORRUPT`, `SIGMA_LUT_TOO_LARGE`, `SIGMA_LUT_NO_ENTRIES` |
-| LUT numerics | `SIGMA_LUT_GAIN_NOT_FINITE`, `SIGMA_LUT_GAIN_NOT_POSITIVE`, `SIGMA_LUT_OFFSET_NOT_FINITE`, `SIGMA_LUT_NO_GAIN_FOR_POL`, `SIGMA_LUT_WIDTH_COVERAGE_GAP` |
-| Imagery | `IMAGERY_MISSING_FOR_POL`, `IMAGERY_INCOMPLETE_FOR_POL` |
-| GDAL driver | `GDAL_DRIVER_UNAVAILABLE` (advisory by default, blocking with `--require-gdal-driver`) |
+| `imageAttributes/rasterAttributes/dataType` | `Mag` or `Complex` |
+| `imageAttributes/rasterAttributes/bitsPerSample` | 8/16 for Mag, 16/32 for Complex |
+| `imageAttributes/rasterAttributes/numberOfLines` | > 0 |
+| `imageAttributes/rasterAttributes/numberOfSamplesPerLine` | > 0, and the gain list must cover it |
+| `imageAttributes/transmitterReceiverPolarisation` | `HH`/`HV`/`VV`/`VH` |
+| `imageAttributes/productType`, `.../acquisitionType` | recorded as product attributes only |
+| `calibration/.../lookupTable` | **filename is the element text**; `selected` attribute carries the lookup dimension (`incidenceAngleCorrection`, `incidenceAngleRange`) |
+
+The sigma0 lookup table:
+
+```xml
+<lut>
+  <offset>SCALAR</offset>
+  <gains>G0 G1 G2 ... GN</gains>   <!-- one gain per image column -->
+</lut>
+```
+
+`<gains>` is a **column list**. There is **no** `gainList`, **no** `pol` element
+and **no** per-gain `incidenceAngle`/`width` pair — version 1.x parsed that
+invented schema and it has been removed. There is no per-angle interpolation and
+no width-coverage check. A document containing `gainList`/`pol`/`incidenceAngle`
+/`width` is correctly reported as carrying no usable `<gains>` column list
+(`LUT_GAINS_UNPARSEABLE`), and a regression test pins that.
+
+This schema is corroborated by the installed GDAL 3.12.2 binary, which contains
+the XPath expression string **`=lut.gains`** and the literal
+**`incidenceAngleCorrection`**.
+
+## Radiometry: raw source versus calibrated output
+
+The two are reported separately and never conflated. **This tool performs no
+calibration**; it only states what a later step would have to do.
+
+| | raw source (as delivered) | future calibrated (not produced here) |
+| --- | --- | --- |
+| `Mag` | quantised **amplitude DN**. `is_power: false` | `sigma0 = (DN**2 + offset) / gain[column]` |
+| `Complex` | **I and Q components**. `is_power: false`. Neither I nor Q is power | `sigma0 = (I**2 + Q**2 + offset) / gain[column]` |
+
+**The gain divides in both cases.** `abs(I+jQ)**2` *alone* is not sigma0; the
+gain and the offset are still required. Version 1.x wrongly described a raw
+magnitude band as "already linear sigma0 power" and wrongly stated the complex
+rule as bare `|I+jQ|**2`; both are fixed.
+
+**A band opened with GDAL metadata item `RADARSAT_2_CALIB:SIGMA0` is already
+linear sigma0 POWER. Do not square it again.** Squaring is a step in *producing*
+that band from raw DN, not a step to apply to it afterwards. (The
+corresponding `RADARSAT_2_CALIB:BETA0` and `:GAMMA0` items exist too.)
+
+### What is and is not verified
+
+Verified against the installed libgdal by direct inspection:
+
+* the metadata domain `RADARSAT_2_CALIB` and item names `RADARSAT_2_CALIB:SIGMA0`,
+  `:BETA0`, `:GAMMA0`, `:GAMMA`, `:UNCALIB` exist;
+* the LUT XPath `=lut.gains` and the literal `incidenceAngleCorrection` exist;
+* the `Complex` data-type literal exists.
+
+**Not** verified, and reported as such in
+`representations.formula_verified_against_gdal_source: false`: the exact
+arithmetic of the calibration formula. The formulas above are the CSA/project
+convention specified for this work. They were **not** confirmed against GDAL
+3.12.2 source or an empirical lab artifact, because **no real RADARSAT-2 product
+is available in this environment** and building one GDAL would accept was out of
+scope. No division factor is guessed and no coefficient is invented. Independent
+review should confirm this against `frmts/rs2` before any calibration code is
+written.
+
+## Drivers
+
+| driver | status on this stack | role |
+| --- | --- | --- |
+| `RS2` | **present** | reads delivered RADARSAT-2 GeoTIFF products |
+| `RCM` | present | **separate** driver for RCM products; never a fallback for RS2 |
+| `SGF` | **absent** | not the RADARSAT-2 driver, not an alternative |
+| `CGX` | **absent** | not the RADARSAT-2 driver, not an alternative |
+
+Driver presence is measured at runtime from the **full GDAL driver registry**,
+reached through the bundled libgdal. Version 1.x used
+`rasterio.drivers.raster_driver_extensions()`, a *filtered* listing that **hid
+the `RS2` driver on this very stack** and wrongly led to an SGF-first design.
+`test_rs2_driver_is_measured_from_the_real_gdal_registry` pins the corrected
+probe.
+
+`productType` is a product attribute. It is **never** used to infer a driver
+name and never matched against the driver list. Driver absence is blocking by
+default (`GDAL_DRIVER_UNAVAILABLE`); `--allow-absent-driver` makes it advisory.
+
+## Checks
+
+| area | findings |
+| --- | --- |
+| `product.xml` | `PRODUCT_XML_MISSING`, `PRODUCT_XML_UNREADABLE`, `PRODUCT_XML_UNPARSEABLE`, `PRODUCT_XML_SCAN_TRUNCATED` |
+| `product.xml` containment | `PRODUCT_XML_PATH_ESCAPE` |
+| `dataType` | `DATA_TYPE_MISSING`, `DATA_TYPE_UNSUPPORTED` |
+| bit depth | `BITS_MISSING`, `BITS_UNSUPPORTED` |
+| dimensions | `DIMENSIONS_MISSING` |
+| polarizations | `POLARIZATIONS_MISSING` |
+| LUT reference | `LUT_REFERENCE_MISSING`, `LUT_PATH_ESCAPE`, `LUT_MISSING` |
+| LUT readability | `LUT_SCAN_TRUNCATED`, `LUT_UNREADABLE`, `LUT_CORRUPT`, `LUT_NO_LUT_ELEMENT`, `LUT_GAINS_UNPARSEABLE` |
+| LUT numerics | `LUT_OFFSET_NOT_FINITE`, `LUT_GAINS_NOT_FINITE`, `LUT_GAINS_NOT_POSITIVE`, `LUT_GAINS_DO_NOT_COVER_WIDTH` |
+| width coverage | `WIDTH_UNKNOWN` (advisory, when raster width is unknown) |
+| imagery | `IMAGERY_MISSING_FOR_POL`, `IMAGERY_INCOMPLETE_FOR_POL` |
+| driver | `GDAL_DRIVER_UNAVAILABLE` |
 
 ### Numeric gates
 
-* **Gains** must parse as `float`, be finite (no `NaN`, no `INF`) and be
-  strictly positive. A zero or negative gain is refused rather than used, since
-  it would silently zero or invert calibrated backscatter.
-* **Offsets** must be finite. Zero is legitimate and accepted; only `NaN`/`INF`
-  or unparseable values are refused.
-* **Width coverage** is evaluated per polarization. Each gain entry is treated
-  as covering an interval around its `incidenceAngle`, and the union of those
-  intervals must span the incidence range that the *product itself* declares via
-  `nearRangeIncidenceAngle` / `farRangeIncidenceAngle`. Gaps are reported
-  explicitly, per polarization, in degrees.
+* **Gains**: every entry must parse as a finite float and be strictly positive.
+* **Offset**: a single finite scalar. Zero is legitimate and accepted.
+* **Gain list length must cover the raster width.** Fewer gains than
+  `numberOfSamplesPerLine` is blocking, and the report names the uncovered column
+  range (e.g. `columns 3..5 would have no gain`). A longer list is fine.
 
-The `width` interpretation is stated in the report and is **not verified
-against a real delivered lookup table** (see Limitations):
+### Bounded scans and truncation
 
-* `width_semantics="bin-width"` (default): `width` is the full width of a bin
-  centred on `incidenceAngle`, i.e. half-width is `width / 2`.
-* `width_semantics="half-width"`: `width` is the half-width, i.e.
-  `|theta - incidenceAngle| <= width`.
+Every XML and lookup-table read is bounded. Exceeding a limit produces an
+**explicit truncation finding** and asserts nothing about the contents:
 
-Switch with `--width-semantics` once a real lookup table is available.
+* `PRODUCT_XML_SCAN_TRUNCATED` — above `LIMITS["max_product_xml_bytes"]`
+* `LUT_SCAN_TRUNCATED` — above `LIMITS["max_lut_bytes"]`
 
-## Detected magnitude versus complex I/Q
+A truncated lookup table reports `gain_count: 0` rather than a partial list.
 
-This distinction is the reason the preflight refuses to be vague, and it is
-derived from the `sampleType` declared in the delivered `product.xml` — never
-from the product name or folder.
+### Path safety
 
-| declared `sampleType` | representation | calibrated band | power rule |
-| --- | --- | --- | --- |
-| `MAG`, `MAGNITUDE`, `DETECTED`, `AMPLITUDE` | `magnitude` | already **linear sigma0 power** once the detector applies the lookup table | **Do not square it.** Convert to dB with `10*log10(value)`. |
-| `COMPLEX_IQ`, `COMPLEX`, `I_Q`, `IQ`, `SLC_COMPLEX` | `complex_iq` | in-phase and quadrature components | `sigma0 = abs(I + jQ)**2 = I**2 + Q**2`. A **magnitude-squared** step is required before `10*log10`. Neither `I` nor `Q` alone is power. |
+* References containing `..`, absolute paths or drive letters are refused.
+* The resolved real path must be a **regular file inside the product
+  directory**, so a symlink pointing outside is refused. A symlink whose target
+  *is* inside the product is accepted.
+* **`product.xml` itself is subject to the same containment rule.** Version 1.x
+  read `product.xml` directly and would follow a symlink out of the product;
+  that is fixed and pinned by
+  `test_product_xml_symlink_escaping_the_product_is_refused`.
+* Directory symlinks escaping the product are pruned during imagery discovery.
+* **The CLI refuses to write the report inside the product directory**
+  (exit code 2), so a read-only product cannot be written into.
 
-Squaring an already-linear detected band would corrupt the radiometry, and
-treating a complex component as power would corrupt it differently. The two are
-reported in `calibration_output`, with `apply_magnitude_squared` set explicitly
-to `true` or `false` — and to `null` when the sample type is unknown, in which
-case **no** power rule is asserted.
+## Corrections in this revision
 
-## Path safety
+| v1.x | v2.0 |
+| --- | --- |
+| Parsed an invented `gainList`/`gain`/`pol`/`incidenceAngle`/`width` schema | Parses the real `<lut><offset/><gains/></lut>` column list |
+| Raw `Mag` band described as "already linear sigma0 power" | Raw `Mag` DN is amplitude; `sigma0 = (DN**2 + offset) / gain` |
+| Complex rule stated as bare `\|I+jQ\|**2` | `sigma0 = (I**2 + Q**2 + offset) / gain[column]`; gain included |
+| LUT reference read from an `href` attribute | Read from `<lookupTable>` **element text**, with `selected` |
+| `dataType` read from `imageAttributes/sampleType` | Read from `imageAttributes/rasterAttributes/dataType` (`Mag`/`Complex`) |
+| SGF/CGX treated as the RADARSAT-2 drivers | `RS2` is the driver; SGF/CGX absent and not alternatives; `RCM` separate |
+| Driver probe used rasterio's filtered list, hiding `RS2` | Full libgdal registry via the bundled library |
+| `productType` mapped to a driver name | `productType` is a product attribute, never a driver |
+| `product.xml` symlink escape accepted | Contained like every other reference |
+| Silent read-limit handling | Explicit `*_SCAN_TRUNCATED` findings |
+| Report could be written inside the product | Refused, exit 2 |
+| ~1490 lines of generic machinery | 1227 lines, one concrete parser |
 
-Every path reached from `product.xml` is checked before any read is attempted:
+Version 1.x tests that asserted the wrong science (raw Mag is power, the complex
+rule without gain, SGF as the driver) were removed, not adjusted.
 
-* References containing `..` segments, absolute paths or drive letters are
-  refused.
-* The resolved real path must be a regular file **inside** the product
-  directory, so a symlink pointing outside is refused
-  (`SIGMA_LUT_PATH_ESCAPE`, `parse_status: "not_attempted"`). A symlink whose
-  target is inside the product is accepted.
-* Directory symlinks that escape the product are pruned during imagery
-  discovery, so a hostile link cannot smuggle files into the inventory.
-* XML and lookup-table reads are bounded (`LIMITS["max_xml_bytes"]`,
-  `LIMITS["max_lut_bytes"]`, `LIMITS["max_lut_entries"]`,
-  `LIMITS["max_imagery_files"]`).
-* A corrupt or truncated lookup table yields `SIGMA_LUT_CORRUPT` with the parser
-  message, never a partial gain list.
+## Limitations
 
-Nothing inside the product directory is created, modified or removed. The only
-optional write is the `--out` report path, written atomically (temp file plus
-`os.replace`). No credentials, no network, no EODMS or other authentication.
-
-## GDAL driver capabilities are measured, not assumed
-
-`gdal_driver_capabilities()` probes the **installed** registry at runtime via
-`rasterio.drivers.raster_driver_extensions()` and reports, per driver,
-`present: true|false`, a `note`, and `route_claimed: false`.
-
-Measured in this development environment:
-
-* rasterio 1.5.2, **GDAL 3.12.2**, 44 driver names visible to rasterio.
-* **`SGF` is absent.** `CGX` is absent. `RS2`, `ISCE` and `ENVI` are also absent
-  from rasterio's registry. A direct probe of the bundled `libgdal` via `ctypes`
-  found 147 registered drivers including `RS2`, `ISCE`, `SAR_CEOS`, `JAXAPALSAR`
-  and `AirSAR` — but still **no `SGF` and no `CGX`**. So the absence of `SGF` is
-  a real property of this GDAL build, not an artifact of the probe method.
-
-Consequences, stated explicitly:
-
-* The preflight does **not** assert that SGF is ScanSAR, ground-range detected,
-  geocoded or orthorectified. Those are product-format claims that require a real
-  delivered product to establish. `gdal_capabilities.drivers.SGF` carries no
-  `scansar` or `geocoded` key at all, and a test asserts that the report never
-  contains such a claim.
-* No substitute route is forced. When the declared `productType` would normally
-  be read with a dedicated driver and that driver is absent, the preflight
-  reports `GDAL_DRIVER_UNAVAILABLE` and refuses to guess an alternative.
-* By default that finding is **advisory**, so the metadata/LUT/imagery verdict
-  stays independent of local software. Pass `--require-gdal-driver` to make it
-  blocking.
-* SLC/complex products need no special driver (they are plain GeoTIFF I/Q
-  pairs), so no driver is required for them.
-
-## Report shape
-
-Top level: `schema_version`, `tool`, `tool_version`, `generated_utc`,
-`product_dir`, `product_dir_resolved`, `status`, `ready_for_calibration`,
-`semantics`, `read_only`, `network_used`, `credentials_used`, `pixels_read`,
-`calibration_performed`, `geocoding_performed`, `change_detection_performed`,
-`limits`, `product`, `sigma_lut`, `imagery`, `calibration_output`,
-`gdal_capabilities`, `findings`, `blocking`, `blocking_count`, `warnings`,
-`errors`, `summary`.
-
-`blocking` is the filtered list of `findings` where `blocking: true`; each entry
-carries a stable `code`, a `severity` of `missing` / `unsupported` / `corrupt`,
-a `subject` and a `message`. `sigma_lut.element_paths` records the element paths
-the gain and offset entries were actually found at inside the delivered file, so
-the layout assumption is auditable rather than implicit.
-
-## Limitations (recorded honestly)
-
-1. **No real product has been checked.** No RADARSAT-2 product exists in the
-   development environment, so this gate has never run against delivered data.
-   Every fixture in the test file is synthetic.
-2. **The public reference `product.xml` could not be fetched.** The reference
-   named in the task,
-   `https://donnees-data.asc-csa.gc.ca/users/OpenData_DonneesOuvertes/pub/RADARSAT-2/RS2_OK103540_PK929658_DK864570_SLA12_20190317_110012_HH_SLC/product.xml`
-   (a *different* acquisition, not challenge input) is unreachable from this
-   environment: TLS verification fails with `unable to get local issuer
-   certificate` via `curl` (default CA store and certifi's bundle) and the fetch
-   tool reports a transport error. TLS verification was deliberately **not**
-   disabled, so the element paths below are **not** confirmed against that file.
-3. **Element paths are namespace-independent and tolerant by design.** Matching
-   is by local name and descendant search, not by a strict schema, so both the
-   nested `sigmaZeroLookupTable/lut/gainList/gain` layout and a flat
-   `gainList/gain` layout are handled. The resolved paths are reported in
-   `sigma_lut.element_paths` so a mismatch with the real product is visible
-   rather than silent. Paths currently matched:
-   * `product/imageAttributes/{productType, sampleType, bitsPerSample, numberOfLines, numberOfSamplesPerLine, nearRangeIncidenceAngle, farRangeIncidenceAngle, transmitterReceiverPolarisation}`
-   * `product/calibration/calibrationLookupTable/@href`
-   * `sigmaZeroLookupTable/lut/gainList/gain/{pol, step, incidenceAngle, gain, width}`
-   * `sigmaZeroLookupTable/lut/offsetList/offset/{pol, step, incidenceAngle, offset}`
-4. **The `width` convention is unverified** (see above). It is reported, not
-   hidden.
-5. **Imagery layout is discovered, not hardcoded.** Files are matched to a
-   polarization by token, so both `imagery/imagery_HH_I.tif`-style and
-   `imagery/image_HH.tif`-style layouts work. The real delivered layout has not
+1. **Never run against a real product.** No RADARSAT-2 product exists here, so
+   every fixture is synthetic. `ready_for_calibration` is a claim about
+   XML/LUT/path consistency only.
+2. **The calibration formula is unverified against GDAL source** (see above).
+3. **Imagery layout is discovered, not hardcoded** — files are matched to a
+   polarization by filename token, so both `imagery/imagery_HH_I.tif` and
+   `imagery/image_HH.tif` styles are found. The real delivered layout has not
    been observed.
-6. **No calibration route, geocoding, terrain correction or product type
-   selection is implemented or recommended.** Per the recorded backend
-   decision, preprocessing requirements depend on the actual product and mode
-   and must not become gates before the real files arrive.
-7. **`rasterio` is optional.** If it is missing, the driver probe reports that it
-   could not measure the registry; every other check still runs. No CRS, no
-   geotransform and no radiometric value is ever invented.
+4. **No calibration route, geocoding or product selection** is implemented or
+   recommended.
+5. `rasterio` is optional; if it cannot locate libgdal, the driver probe reports
+   `present: null` (**unknown**, not absent) and every other check still runs.
+   No CRS, transform or radiometric value is ever invented.

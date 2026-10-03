@@ -47,6 +47,8 @@ API corrections are published through66cb7af5: worker recorded268passing tests; 
 
 Monitoring correction: SwarmForge sometimes reports provider retry errors, unchanged token totals and pending_messages1 while the current worker is executing. Recovery agents confirmed execution by matching newest OpenCode assistant parent IDs to current dispatch messages and observing actual source edits. Do not restart or duplicate owners merely because the control-plane counters are stale. Completed exact-head reports with stale result IDs are normalized only after source/tests/final assistant completion match; source publication is separately remote-verified.
 
+Generation compatibility checkpoint: APIb109bfc7 is now published. Lead combined run withproducer50f4b483 andintegration49ac9ff9:378passed,3failed,7.70seconds. Producer-generatedbundles nowserve correctly; remainingthreeassertionsencodeolderimageryURLs/errorwording. Integrationtestowner is verifyingactualdeclaredepochURLs,409stalerequests andsanitizedpointererrors ratherthanweakeningbehaviorchecks. Hotgeneration-rootcontainment remainsanAPIcorrectivefollowup; nofinalapproval ormergedproducer/API yet.
+
 1. Recover current-run reports and exact published heads; preserve artifacts, independently review new implementations and remaining fixes.
 2. Make acquisition credential handling reviewable and safe, then give the user the exact interactive authentication/download command. Authentication requires the user; unrelated work continues.
 3. Download only the primary selected scenes, inspect actual products, and determine minimum calibration/geocoding/alignment from evidence.

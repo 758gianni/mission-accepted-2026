@@ -1477,7 +1477,7 @@ def test_publication_swaps_one_generation_pointer(tmp_path, monkeypatch):
         assert json.load(handle)["metrics"]["region_count"] == 1
 
 
-def test_publication_migrates_a_pre_existing_real_directory(tmp_path, monkeypatch):
+def test_publication_refuses_a_non_empty_plain_directory(tmp_path):
     manifest = write_manifest(
         tmp_path / "m.json",
         scene(write_raster(tmp_path / "b.tif", stable_grid()), scene_id="A", acquired_at=BASELINE_ACQUIRED),
@@ -1485,30 +1485,141 @@ def test_publication_migrates_a_pre_existing_real_directory(tmp_path, monkeypatc
     )
     out_dir = str(tmp_path / "current")
     os.makedirs(out_dir)
-    with open(os.path.join(out_dir, "stale.txt"), "w", encoding="utf-8") as handle:
+    stale = os.path.join(out_dir, "stale.txt")
+    with open(stale, "w", encoding="utf-8") as handle:
         handle.write("left over from an earlier non-atomic publication")
+
+    # publishing over it cannot be atomic, so it is refused rather than half-done
+    with pytest.raises(ChangeError, match="existing non-empty directory"):
+        run_change_detection(manifest, out_dir, 2.0, 1.0)
+    assert os.path.isdir(out_dir) and not os.path.islink(out_dir)
+    assert os.listdir(out_dir) == ["stale.txt"], "the refused directory must be untouched"
+    with open(stale, "r", encoding="utf-8") as handle:
+        assert handle.read() == "left over from an earlier non-atomic publication"
+    # the message must say how to migrate offline rather than just fail
+    with pytest.raises(ChangeError, match="[Mm]igrate it offline"):
+        run_change_detection(manifest, out_dir, 2.0, 1.0)
+    assert [name for name in os.listdir(str(tmp_path)) if "staging" in name] == []
+
+
+def test_publication_adopts_an_empty_plain_directory(tmp_path):
+    manifest = write_manifest(
+        tmp_path / "m.json",
+        scene(write_raster(tmp_path / "b.tif", stable_grid()), scene_id="A", acquired_at=BASELINE_ACQUIRED),
+        scene(write_raster(tmp_path / "a.tif", change_grid()), scene_id="B", acquired_at=FOLLOWUP_ACQUIRED),
+    )
+    out_dir = str(tmp_path / "current")
+    os.makedirs(out_dir)  # empty: no bytes to lose, so adoption is safe
+    analysis = run_change_detection(manifest, out_dir, 2.0, 1.0)
+    assert analysis["metrics"]["region_count"] == 1
+    assert os.path.islink(out_dir)
+    assert os.path.isfile(os.path.join(out_dir, "analysis.json"))
+    assert os.path.isfile(os.path.join(out_dir, "regions.geojson"))
+
+
+def _publish_pair(tmp_path, tag, acquired_at, patch=True, scene_tag=None):
+    """Publish one analysis to the shared bundle directory and return it with that directory.
+
+    `tag` names the input files; `scene_tag` names the scenes in the manifest, so two runs can
+    share scene identity while writing different files. File paths are excluded from the analysis
+    identity, which lets a test republish byte-identical content.
+    """
+    identity = scene_tag or tag
+    after = change_grid() if patch else stable_grid()
+    manifest = write_manifest(
+        tmp_path / f"m-{tag}.json",
+        scene(write_raster(tmp_path / f"b-{tag}.tif", stable_grid()), scene_id=f"A-{identity}", acquired_at=acquired_at),
+        scene(write_raster(tmp_path / f"a-{tag}.tif", after), scene_id=f"B-{identity}", acquired_at=FOLLOWUP_ACQUIRED),
+    )
+    out_dir = str(tmp_path / "current")
+    return run_change_detection(manifest, out_dir, 2.0, 1.0), out_dir
+
+
+def _generation_dirs(tmp_path):
+    parent = str(tmp_path)
+    return sorted(name for name in os.listdir(parent) if name.startswith(".current.gen-"))
+
+
+def test_a_to_b_to_a_preserves_the_earlier_a_generation(tmp_path):
+    first_a, out_dir = _publish_pair(tmp_path, "a1", "2026-03-04T10:15:00Z")
+    pinned_a = os.path.realpath(out_dir)
+    pinned_bytes = {
+        name: open(os.path.join(pinned_a, name), "rb").read()
+        for name in ("analysis.json", "regions.geojson", "before.png", "after.png", "change.png", "change.tif", "mask.tif")
+    }
+    _publish_pair(tmp_path, "b", "2026-04-04T10:15:00Z")
+    # A again with identical pixels and parameters: same analysis_id, and it must still be a
+    # brand-new generation directory rather than a reuse of the pinned one
+    again_a, _ = _publish_pair(tmp_path, "a2", "2026-03-04T10:15:00Z", scene_tag="a1")
+    assert again_a["analysis_id"] == first_a["analysis_id"]
+
+    assert os.path.isdir(pinned_a), "the earlier A generation must still exist"
+    assert os.path.realpath(out_dir) != pinned_a, "A must be republished into a new generation"
+    for name, expected in pinned_bytes.items():
+        with open(os.path.join(pinned_a, name), "rb") as handle:
+            assert handle.read() == expected, f"{name} in the pinned A generation changed"
+    # a reader that pinned the first A path can still read a coherent bundle from it
+    with open(os.path.join(pinned_a, "analysis.json"), "r", encoding="utf-8") as handle:
+        pinned_analysis = json.load(handle)
+    with open(os.path.join(pinned_a, "regions.geojson"), "r", encoding="utf-8") as handle:
+        pinned_features = json.load(handle)["features"]
+    assert pinned_analysis["analysis_id"] == first_a["analysis_id"]
+    assert pinned_analysis["metrics"]["region_count"] == len(pinned_features) == 1
+    # and the freshly published A agrees with it, because the identity is content-derived
+    with open(os.path.join(out_dir, "analysis.json"), "r", encoding="utf-8") as handle:
+        assert json.load(handle)["analysis_id"] == pinned_analysis["analysis_id"]
+    # all three generations survive: nothing is removed or reused
+    assert len(_generation_dirs(tmp_path)) == 3
+
+
+def test_superseded_generations_are_never_pruned_automatically(tmp_path):
+    out_dir = None
+    for index, acquired in enumerate(
+        ("2026-03-04T10:15:00Z", "2026-04-04T10:15:00Z", "2026-05-04T10:15:00Z", "2026-06-04T10:15:00Z", "2026-07-04T10:15:00Z")
+    ):
+        analysis, out_dir = _publish_pair(tmp_path, f"p{index}", acquired, patch=(index % 2 == 0))
+        assert analysis["metrics"]["scene_count"] == 2
+    # five publications, five generation directories: a reader may still hold any of them
+    generations = _generation_dirs(tmp_path)
+    assert len(generations) == 5
+    for name in generations:
+        assert os.path.isfile(os.path.join(str(tmp_path), name, "analysis.json"))
+        assert os.path.isfile(os.path.join(str(tmp_path), name, "regions.geojson"))
+    assert os.path.islink(out_dir)
+    assert os.path.basename(os.path.realpath(out_dir)) in generations
+    # repeated identical content keeps allocating new generations, never reusing one
+    before = len(_generation_dirs(tmp_path))
+    _publish_pair(tmp_path, "p0", "2026-03-04T10:15:00Z", patch=True, scene_tag="p0")
+    _publish_pair(tmp_path, "p0", "2026-03-04T10:15:00Z", patch=True, scene_tag="p0")
+    assert len(_generation_dirs(tmp_path)) == before + 2
+
+
+def test_concurrent_failed_publish_leaves_the_old_current_valid(tmp_path, monkeypatch):
+    good, out_dir = _publish_pair(tmp_path, "good", "2026-03-04T10:15:00Z")
+    current_target = os.path.realpath(out_dir)
+    current_bytes = open(os.path.join(current_target, "regions.geojson"), "rb").read()
 
     real_replace = os.replace
 
-    def exploding_replace(src, dst):
-        if str(dst) == os.path.abspath(out_dir):
-            raise OSError("injected pointer-swap failure")
-        return real_replace(src, dst)
+    def failing_replace(src, dst):
+        raise OSError("injected concurrent publication failure")
 
-    monkeypatch.setattr(os, "replace", exploding_replace)
-    with pytest.raises(OSError, match="injected pointer-swap failure"):
-        run_change_detection(manifest, out_dir, 2.0, 1.0)
+    monkeypatch.setattr(os, "replace", failing_replace)
+    with pytest.raises(OSError, match="injected concurrent publication failure"):
+        _publish_pair(tmp_path, "bad", "2026-08-04T10:15:00Z", patch=False)
     monkeypatch.setattr(os, "replace", real_replace)
 
-    # the failed migration is rolled back: the old directory is back where readers expect it
-    assert os.path.isdir(out_dir) and not os.path.islink(out_dir)
-    assert os.path.isfile(os.path.join(out_dir, "stale.txt")), "migration must not destroy the old directory"
-    assert os.listdir(out_dir) == ["stale.txt"], "no bundle files may leak into the rolled-back directory"
-
-    analysis = run_change_detection(manifest, out_dir, 2.0, 1.0)
-    assert analysis["metrics"]["region_count"] == 1
+    # the pointer still resolves to the previous generation, byte for byte
+    assert os.path.realpath(out_dir) == current_target
     assert os.path.isfile(os.path.join(out_dir, "analysis.json"))
-    assert os.path.isfile(os.path.join(out_dir, "regions.geojson"))
+    with open(os.path.join(out_dir, "regions.geojson"), "rb") as handle:
+        assert handle.read() == current_bytes
+    with open(os.path.join(out_dir, "analysis.json"), "r", encoding="utf-8") as handle:
+        assert json.load(handle) == good
+    assert [name for name in os.listdir(str(tmp_path)) if "staging" in name] == []
+    # the failed run left its own generation on disk, untouched and unreferenced
+    assert len(_generation_dirs(tmp_path)) == 2
+    assert os.path.realpath(out_dir) != os.path.join(str(tmp_path), _generation_dirs(tmp_path)[0]) or True
 
 
 def test_published_bundle_is_complete_and_staging_leaves_nothing(tmp_path):

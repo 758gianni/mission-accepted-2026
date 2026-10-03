@@ -256,8 +256,10 @@ see. So publication does not replace files in place at all.
    `metrics.region_count` equal to the GeoJSON feature count, feature ids matching
    `region_id`, preview bounds equal to `analysis.bbox`, the area invariants).
 2. The staged directory is renamed to its own **generation directory**,
-   `<parent>/.<name>.gen-<analysis_id>`, and fsynced. Nothing readers look at has
-   changed yet.
+   `<parent>/.<name>.gen-<analysis_id>`, and fsynced. The name is *never reused*: if that name
+   already exists, a fresh suffix (`-<time_ns>-<pid>`, then a counter) is appended, because an
+   earlier publication of the same content may still be referenced by a reader. Nothing readers
+   look at has changed yet.
 3. A symlink is created at a temporary name pointing at that generation, and one
    `os.replace` swaps it onto `--out`.
 
@@ -270,20 +272,31 @@ Guarantees, stated plainly:
 * the bundle is never partially replaced in place;
 * a failure before the pointer swap leaves the previous bundle exactly as it was;
 * a failure after the swap leaves the new bundle fully in place;
-* the superseded generation stays on disk (the two most recent are kept, older ones
-  pruned best-effort), so a failed publication can be inspected or reverted;
+* every publication allocates a new, never-before-used generation directory, so
+  `A -> B -> A` never removes or modifies the earlier `A`; the earlier generation's
+  path and bytes stay valid;
+* superseded generations are **never pruned automatically**, because a reader may
+  still hold one. Removing them is a caller decision made outside this
+  presentation step, not something this CLI does;
+* a failed publication leaves the previous bundle and the pointer exactly as they
+  were, with its own untouched generation left beside them;
 * no bundle is published if the staging checks fail.
 
-The one non-atomic step is a **one-time migration**: if `--out` already exists as a
-plain directory — from an earlier publication scheme or from a human — a symlink
-cannot be renamed onto it, so the directory is renamed aside immediately before
-the swap. That window has no publication in flight, and if the swap fails the
-directory is renamed back before the error propagates (regression-tested with an
-injected failure). Every later publication is a single `os.replace`.
+**Pre-existing plain directory: refused, not migrated.** A symlink cannot be renamed onto a real
+directory, so replacing one is not atomic and a crash in between would strand the previous bundle.
+There is no honest way to make that atomic, so publishing over a **non-empty** plain directory is
+refused with an error, its bytes untouched, and the message tells the caller how to migrate
+offline (publish to a fresh path, then replace the directory with a symlink to the resulting
+`.<name>.gen-<analysis_id>` directory, or move the directory aside and re-run). An **empty**
+directory holds no bytes, so it is adopted without ceremony. Nothing here pretends to atomicity it
+does not have.
 
-Pruning superseded generations is best-effort and never touches the published
-pointer; a reader that resolved a superseded path itself (rather than through
-`--out`) could find it pruned. Readers should go through `--out`.
+**Readers must pin.** Because `--out` is a mutable pointer, a reader that opens `analysis.json`
+through it and then opens `regions.geojson` through it can still cross a swap. Each multi-file
+reader should resolve the pointer **once** (`realpath`) and read every file of one response from
+that immutable directory. This CLI guarantees that a bundle is never partially replaced and that a
+given generation directory's bytes never change; per-request snapshot isolation is the reader's
+responsibility.
 
 ## Shared result bundle contract v1
 

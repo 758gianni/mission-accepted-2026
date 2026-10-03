@@ -41,9 +41,9 @@ import hashlib
 import json
 import math
 import os
-import re
 import shutil
 import sys
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -1361,25 +1361,44 @@ def _fsync_dir(path: str) -> None:
         os.close(handle)
 
 
-#: Superseded generation directories kept beside the published one, so a failed run can be
-#: inspected and the previous bundle can be reverted to. Oldest beyond this are pruned.
-KEPT_SUPERSEDED_GENERATIONS = 2
+def _unique_generation(parent: str, name: str, analysis_id: str) -> str:
+    """A generation directory name that has never been used before.
+
+    Generations are immutable and never reused: an existing directory is never removed or
+    overwritten, because a reader may have pinned an earlier publication of the same analysis_id
+    through the pointer or by resolved path. A fresh suffix is appended when the content-derived
+    name is already taken, so A -> B -> A always allocates a new directory for A.
+    """
+    base = os.path.join(parent, f".{name}.gen-{analysis_id}")
+    if not os.path.lexists(base):
+        return base
+    stamp = f"{time.time_ns()}-{os.getpid()}"
+    for attempt in range(1000):
+        candidate = f"{base}-{stamp}" if attempt == 0 else f"{base}-{stamp}-{attempt}"
+        if not os.path.lexists(candidate):
+            return candidate
+    raise ChangeError(f"cannot allocate a unique generation directory beside {base}")
 
 
-def _generation_pattern(name: str) -> str:
-    return re.compile(rf"^\.{re.escape(name)}\.gen-")
+def _refuse_plain_directory(out_dir: str) -> None:
+    """Refuse to publish over a pre-existing non-empty plain directory, preserving its bytes.
 
-
-def _prune_generations(parent: str, name: str, keep: str) -> None:
-    """Best-effort pruning of superseded generations; never touches the published pointer."""
-    published = os.path.realpath(keep) if os.path.isdir(keep) else None
-    candidates = sorted(
-        entry
-        for entry in os.listdir(parent)
-        if _generation_pattern(name).match(entry) and os.path.join(parent, entry) != published
+    A symlink cannot be renamed onto a real directory, so replacing one is not atomic and a
+    crash in between would strand the previous bundle. Rather than pretend, refuse and leave the
+    directory exactly as it is; an empty directory is safe to adopt because it holds no bytes.
+    """
+    if not os.path.isdir(out_dir) or os.path.islink(out_dir):
+        return
+    if not os.listdir(out_dir):
+        return
+    raise ChangeError(
+        f"{out_dir} is an existing non-empty directory, not a publication pointer. Publishing "
+        "would not be atomic over it, so nothing was changed and its files are untouched. "
+        "Migrate it offline: publish to a fresh path (for example "
+        f"{out_dir}.new), then replace {out_dir} with a symlink to the resulting "
+        f".{os.path.basename(out_dir)}.gen-<analysis_id> directory, or move the directory aside "
+        "yourself and re-run this command."
     )
-    for entry in candidates[: max(0, len(candidates) - KEPT_SUPERSEDED_GENERATIONS)]:
-        shutil.rmtree(os.path.join(parent, entry), ignore_errors=True)
 
 
 def _publish(staging: str, out_dir: str, analysis: Dict[str, Any]) -> None:
@@ -1393,11 +1412,14 @@ def _publish(staging: str, out_dir: str, analysis: Dict[str, Any]) -> None:
 
     Guarantees, and their limits:
       * the bundle is never partially replaced in place;
-      * an interrupted publication preserves the previous bundle, which is also kept on disk;
-      * only one pointer swap is observable, so concurrent readers stay coherent;
-      * a pre-existing plain directory (from an earlier publication scheme) is migrated by
-        renaming it aside first, which has a brief window in which ``out_dir`` does not exist.
-        That one-time migration is the only non-atomic step and is reported rather than hidden.
+      * every publication allocates a new, never-before-used generation directory, so an earlier
+        publication of the same content is neither removed nor modified;
+      * superseded generations are never pruned automatically, because a reader may still hold
+        one; removing them is the caller's decision, outside this presentation step;
+      * an interrupted publication leaves the previous bundle and the pointer untouched;
+      * a pre-existing non-empty plain directory is refused rather than migrated: there is no
+        atomic way to replace it with a pointer, so the bytes are preserved and the caller is
+        told how to migrate offline. Only an empty directory is adopted, which loses nothing.
     """
     out_dir = os.path.abspath(out_dir)
     parent = os.path.dirname(out_dir) or "."
@@ -1405,11 +1427,8 @@ def _publish(staging: str, out_dir: str, analysis: Dict[str, Any]) -> None:
     os.makedirs(parent, exist_ok=True)
     analysis_id = str(analysis.get("analysis_id") or "unknown")
 
-    generation = os.path.join(parent, f".{name}.gen-{analysis_id}")
-    if os.path.realpath(out_dir) == generation:
-        # republishing identical content: never touch the generation readers are resolving
-        generation = os.path.join(parent, f".{name}.gen-{analysis_id}-{os.getpid()}")
-    shutil.rmtree(generation, ignore_errors=True)
+    _refuse_plain_directory(out_dir)
+    generation = _unique_generation(parent, name, analysis_id)
     os.rename(staging, generation)
     for bundle_file in REQUIRED_BUNDLE_FILES:
         _fsync_path(os.path.join(generation, bundle_file))
@@ -1419,22 +1438,11 @@ def _publish(staging: str, out_dir: str, analysis: Dict[str, Any]) -> None:
     if os.path.lexists(pointer):
         os.remove(pointer)
     os.symlink(os.path.basename(generation), pointer)
-    superseded = None
     if os.path.isdir(out_dir) and not os.path.islink(out_dir):
-        superseded = os.path.join(parent, f".{name}.superseded-{os.getpid()}")
-        os.rename(out_dir, superseded)
-    try:
-        os.replace(pointer, out_dir)
-    except OSError:
-        # the one-time migration is the only step that can leave out_dir missing; put the old
-        # directory back where readers expect it before propagating the failure
-        if superseded is not None and not os.path.lexists(out_dir):
-            os.rename(superseded, out_dir)
-        if os.path.lexists(pointer):
-            os.remove(pointer)
-        raise
+        # only reachable for an empty directory, which _refuse_plain_directory cleared
+        os.rmdir(out_dir)
+    os.replace(pointer, out_dir)
     _fsync_dir(parent)
-    _prune_generations(parent, name, out_dir)
 
 
 # --------------------------------------------------------------------------- #

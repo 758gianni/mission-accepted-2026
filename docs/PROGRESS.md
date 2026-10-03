@@ -13,7 +13,7 @@ Deliver a scientifically defensible, locally runnable RADARSAT-2 Tropical Forest
 | Repository and worker setup | Established | Correct private repo configured; isolated worker branches; original gitignore pushed. |
 | Public dataset reconnaissance | Initial selection established | Three overlapping Sabah SGF catalog scenes identified, 2009-08-12 / 2009-11-16 / 2010-02-20; actual delivered product properties unverified. |
 | Reproducible acquisition | Implemented branch, security review pending | CLI wrapper checkpoint babc4bd8; signed-URL handling, multi-scene selection, limits and credential-boundary fixes remain outstanding. No agent authentication. |
-| Product inventory | Implemented branch, fixes/review pending | Checkpoint 7c0faf33; placeholder georeferencing, JSON nodata, rotated spacing and real XML fields under review. |
+| Product inventory | Independently approved and integrated | Final b3fb1ecd approved with independent probes/mutation tests, merged at59869bc2; integration suite46passed, six expected fixture warnings,1.24seconds. Actual downloaded product reconnaissance still pending. |
 | Prepared-pair change detection | Implemented branch, final review pending | Checkpoint b8d9059d; 47 lead-run tests passed on synthetic prepared rasters. This does not demonstrate raw-data preprocessing or real changes. |
 | Read-only API | Updated branch, independent review pending | Recovered published a3f94b3; worker retained evidence of 184 passing tests after consistency fixes. Lead re-verification and PNG integrity fix pending. |
 | Integrated prepared-data pipeline | Scratch verified, review pending | Producer 1873426b + API a3f94b3 + integration tests 49ac9ff9: 262 passed, one dependency warning, 6.09 seconds under frozen lock. Orbit mismatch closed at this checkpoint; branches not merged. |
@@ -26,6 +26,8 @@ Deliver a scientifically defensible, locally runnable RADARSAT-2 Tropical Forest
 Twelve additional offline work packages cover end-to-end tests, registration diagnostics, calibration preflight, catalog selection, dashboard contract, demo runbook, performance, resilience, empirical GDAL behavior, AOI context, reproducibility and compliance. Their VMs/artifacts survived a lead environment restart. Eighteen timed-out workers received bounded recovery instructions; latest check showed 17 running, seven completed, one failed and four previously destroyed. These are snapshots; consult SwarmForge for live states. No retained VM is being destroyed before artifact/source verification.
 
 See [OFFLINE-HANDOFF.md](OFFLINE-HANDOFF.md) for worker IDs, checkpoints, review gates and recovery context. Recovery handoff is published on forestwatch/offline-recovery-20261003; main and teammates' frontend are unchanged by that branch.
+
+For a replacement LLM, start with [TAKEOVER.md](TAKEOVER.md): ordered goal ledger, durable branch pointers, actual verification checkpoints, current worker runs, rejected science, credential/frontend boundaries and exact next actions. Update that guide along with this progress log whenever a milestone or blocker changes.
 
 ## Next actions and blockers
 

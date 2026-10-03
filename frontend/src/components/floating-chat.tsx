@@ -38,23 +38,25 @@ const FloatingChat = ({ selectedClearing, sensitivityDb }: FloatingChatProps) =>
 						if (isOpen && document.activeElement === launcherRef.current) panelRef.current?.querySelector('textarea')?.focus({ preventScroll: true });
 					}}
 					onKeyDown={(event) => {
-						if (event.key === 'Escape') { event.preventDefault(); close(); }
+						if (event.key === 'Escape') {
+							event.preventDefault();
+							close();
+						}
 					}}
-					className='flex h-[min(560px,calc(100dvh-112px))] w-[min(400px,calc(100vw-32px))] overflow-hidden rounded-2xl border border-edge bg-panel shadow-[0_16px_60px_-12px_rgba(28,38,32,0.3)]'
-				>
+					className='flex h-[min(560px,calc(100dvh-112px))] w-[min(400px,calc(100vw-32px))] overflow-hidden rounded-2xl border border-edge bg-panel shadow-[0_16px_60px_-12px_rgba(28,38,32,0.3)]'>
 					<ChatPanel selectedClearing={selectedClearing} sensitivityDb={sensitivityDb} suggestions={suggestions} onClose={close} isOpen={isOpen} />
 				</motion.div>
+
 				<motion.button
 					ref={launcherRef}
 					type='button'
 					aria-label={isOpen ? 'Close chat' : 'Open chat'}
 					aria-expanded={isOpen}
 					aria-controls='area-chat'
-					onClick={() => isOpen ? close() : setIsOpen(true)}
+					onClick={() => (isOpen ? close() : setIsOpen(true))}
 					whileHover={{ scale: reduceMotion ? 1 : 1.06 }}
 					whileTap={{ scale: reduceMotion ? 1 : 0.94 }}
-					className='inline-flex size-14 items-center justify-center rounded-full bg-ink text-panel shadow-lg [transition-property:background-color] hover:bg-ink/90'
-				>
+					className='inline-flex size-14 items-center justify-center rounded-full bg-ink text-panel shadow-lg [transition-property:background-color] hover:bg-ink/90'>
 					<motion.span initial={false} animate={{ rotate: isOpen && !reduceMotion ? 90 : 0 }}>
 						{isOpen ? <X className='size-6' aria-hidden='true' /> : <MessageCircle className='size-6' aria-hidden='true' />}
 					</motion.span>

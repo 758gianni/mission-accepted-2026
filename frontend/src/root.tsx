@@ -20,6 +20,7 @@ const Root = () => {
 				<App clearings={clearings} selectedClearingId={selectedId} swipePosition={swipePosition} showClearings={showClearings} showBoundary={showBoundary} sensitivity={sensitivity} onSwipePositionChange={setSwipePosition} onShowClearingsChange={setShowClearings} onShowBoundaryChange={setShowBoundary} onSensitivityChange={setSensitivity} />
 				<Sidebar clearings={clearings} selectedClearingId={selectedId} onSelectedClearingChange={setSelectedId} />
 			</div>
+
 			<FloatingChat selectedClearing={clearings.find((clearing) => clearing.id === selectedId)?.title ?? 'Selected area'} sensitivityDb={sensitivity} />
 		</div>
 	);

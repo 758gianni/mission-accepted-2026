@@ -1,60 +1,58 @@
 # Goal and progress
 
-Updated: 2026-10-03, after offline result recovery. Lead-owned living status; update after meaningful worker results, reviews, integration, dataset acquisition and validation. Record evidence and blockers rather than speculative completion percentages.
+Updated: 2026-10-03 12:39 UTC. This is a living milestone ledger. Start a takeover with [TAKEOVER.md](TAKEOVER.md); re-query workers and remote heads before acting. Update these documents after meaningful results, reviews, fixes, integration, downloads and scientific validation.
 
 ## Goal
 
-Deliver a scientifically defensible, locally runnable RADARSAT-2 Tropical Forest land-change demo: real temporally separated acquisitions -> calibrated/aligned rasters -> detected polygons with hectares, magnitude and temporal context -> API -> polished interactive presentation dashboard. Human teammates own frontend; this lead owns acquisition, geospatial analysis, backend, coordination and validation. The presentation must reliably show a preselected validated real region without terminal navigation.
+Deliver a reliable five-minute presentation dashboard using real RADARSAT-2 Tropical Forest acquisitions: calibrated and aligned scenes → quantified change polygons → read-only API → interactive map, imagery, dates and explanation. At least two real acquisitions and a validated preselected real region are required. Human teammates own frontend; the lead owns acquisition, processing, backend, coordination and validation.
 
-## Verified progress
+## Current goal ledger
 
-| Milestone | State | Evidence / remaining work |
+| Goal | Verified progress | Gate remaining |
 | --- | --- | --- |
-| Repository and worker setup | Established | Correct private repo configured; isolated worker branches; original gitignore pushed. |
-| Public dataset reconnaissance | Initial selection established | Three overlapping Sabah SGF catalog scenes identified, 2009-08-12 / 2009-11-16 / 2010-02-20; actual delivered product properties unverified. |
-| Reproducible acquisition | Implemented branch, security review pending | CLI wrapper checkpoint babc4bd8; signed-URL handling, multi-scene selection, limits and credential-boundary fixes remain outstanding. No agent authentication. |
-| Product inventory | Independently approved and integrated | Final b3fb1ecd approved with independent probes/mutation tests, merged at59869bc2; integration suite46passed, six expected fixture warnings,1.24seconds. Actual downloaded product reconnaissance still pending. |
-| Prepared-pair change detection | Implemented branch, final review pending | Checkpoint b8d9059d; 47 lead-run tests passed on synthetic prepared rasters. This does not demonstrate raw-data preprocessing or real changes. |
-| Read-only API | Updated branch, independent review pending | Recovered published a3f94b3; worker retained evidence of 184 passing tests after consistency fixes. Lead re-verification and PNG integrity fix pending. |
-| Integrated prepared-data pipeline | Scratch verified, review pending | Producer 1873426b + API a3f94b3 + integration tests 49ac9ff9: 262 passed, one dependency warning, 6.09 seconds under frozen lock. Orbit mismatch closed at this checkpoint; branches not merged. |
-| Integrated real-data vertical slice | Not achieved | No real pixels/result bundle locally; raw preprocessing and real-data validation remain pending. |
-| Dashboard integration and preselected event | Pending | Frontend owned by teammates; backend contract and demo-runbook workers assigned. No validated real example region. |
-| Live-demo readiness | Not achieved | Requires real-data vertical slice, scientific checks, reviewed integration and deterministic dashboard rehearsal. |
+| Repository, isolation and worker orchestration | Correct private repository; original gitignore pushed; isolated worker branches; retained source recovery | Keep checking teammates' advancing commits and worker state |
+| Public dataset selection | Three overlapping Sabah scenes dated 2009-08-12, 2009-11-16, 2010-02-20; approximately 1.145 GB | Actual product properties and useful changes are unverified |
+| Safe reproducible acquisition | eb692bc independently approved: 97 tests passed, one setup-only skip, 14 reviewer probes; local bootstrap and doctor pass | Lead rejected interruption-time signed-URL persistence; owner correction and re-review required. Local full-suite scan stalled and needs bounded diagnosis |
+| Product inventory | b3fb1ecd independently approved and merged at59869bc2; 46 lead tests pass | Run on actual products when downloaded |
+| Prepared-pair producer | Published8027d7bd; 63 independent component tests pass; publication concurrency probes pass | Reviewer requests correction of stale scientific method description; exact new-head approval |
+| Read-only API | Publishedb88dd5b7; 308 independently rerun tests pass; epoch URLs and generation containment implemented | Final exact-head review |
+| Prepared-data producer/API integration | Latest b88dd5b7/8027d7bd/eda4c6fb composition: 401 lead tests passed, one dependency warning, 9.37 seconds | Exact-head independent reviews and integration merge still required |
+| Calibration and registration | Corrective calibration4fb2b713 found on VM; registration2dcd157c published | Verify source/report durability and obtain final scientific approval; no actual product validation |
+| Frontend handoff | Contract7351140a published; real URLs, bounds and epoch409 semantics documented | Final review; give concrete real bundle to human frontend owners |
+| Real-data vertical slice | Not achieved | No real product bytes locally; raw-to-prepared route must follow reconnaissance |
+| Presentation dashboard and example | Not achieved | Teammates' dashboard, validated real region and deterministic rehearsal |
 
-## Current worker management
+Do not describe component tests as a completed real-data demo. No percentage completion is claimed.
 
-Twelve additional offline work packages cover end-to-end tests, registration diagnostics, calibration preflight, catalog selection, dashboard contract, demo runbook, performance, resilience, empirical GDAL behavior, AOI context, reproducibility and compliance. Their VMs/artifacts survived a lead environment restart. Eighteen timed-out workers received bounded recovery instructions; latest check showed 17 running, seven completed, one failed and four previously destroyed. These are snapshots; consult SwarmForge for live states. No retained VM is being destroyed before artifact/source verification.
+## Current work and ownership
 
-See [OFFLINE-HANDOFF.md](OFFLINE-HANDOFF.md) for worker IDs, checkpoints, review gates and recovery context. Recovery handoff is published on forestwatch/offline-recovery-20261003; main and teammates' frontend are unchanged by that branch.
+SwarmForge team: forest-change-20261002. The latest inventory has 43 workers: four previously destroyed, others retained. Snapshots may become stale. Preserve exact source and artifacts before cleanup; no retained VM is currently being destroyed.
 
-For a replacement LLM, start with [TAKEOVER.md](TAKEOVER.md): ordered goal ledger, durable branch pointers, actual verification checkpoints, current worker runs, rejected science, credential/frontend boundaries and exact next actions. Update that guide along with this progress log whenever a milestone or blocker changes.
+- /root/recover_swarm_state coordinates the existing acquisition owner, local test diagnosis and interruption-safe redaction.
+- /root/api_corrections supplies verified exact source bundles and supervises the integration owner's composition run468f02bd-f207-4e83-bd0b-b7d726e145b6.
+- /root/recover_producer coordinates producer/API final reviews and calibration source/report recovery.
+- Existing SwarmForge specialists continue calibration, catalog, contract, registration and ancillary validation work without competing file ownership.
+- Main/frontend remain human-owned. The lead publishes to forestwatch/offline-recovery-20261003.
 
-## Next actions and blockers
+Exact worker IDs, heads, report recovery rules and acceptance criteria are in [TAKEOVER.md](TAKEOVER.md). Earlier detailed recovery history remains in [OFFLINE-HANDOFF.md](OFFLINE-HANDOFF.md).
 
-Recovered commits are published for integration tests (49ac9ff9), registration diagnostics (93250adf), catalog selector (16076a68), dashboard contract (62952f75) and demo runbook (8755df1f). Six independent review workers are assigned these changes and the final API checkpoint. No approval or integration is implied by publication.
+## Next actions
 
-The actual producer-to-API integration tests exposed a blocker: relative_orbit is serialized as float by the producer but must be an integer in the API. The producer owner has a regression/fix task. Additional bounded follow-ups cover exact minimum-area filtering, raster-content identity, rotated-grid rejection and interrupted publication preserving the previous bundle. The API owner is checking truncated PNG acceptance. Synthetic fixture failures are useful evidence, not a demonstrated real land-change result.
+1. Resolve actual final-review findings with existing owners, preserve source, and review new exact heads.
+2. Verify current producer/API/integration composition and integrate approved changes.
+3. Finish interruption-safe acquisition, verify bootstrap and give the user the exact interactive download command. Only the user handles real credentials.
+4. Inspect actual XML/LUTs/rasters in parallel; determine minimum evidence-supported calibration/geocoding/registration.
+5. Establish and validate a real-data bundle before advanced features.
+6. Supply concrete API/data needs to frontend teammates, validate a clear example region and rehearse the five-minute demo.
 
-Latest recovery inspection found clean unpublished VM commits: acquisition ad01dabf (72 tests reported), inventory b3fb1ecd (46 tests reported), catalog 05da39bf (422 checks reported), API PNG verification 679b7be6 (219 tests reported) and producer orbit fix 1873426b (52 tests reported). These are actual VM checkpoints, not approved or remotely verified deliverables yet. Recovery agents are preserving source and checking publication; final-head reviewers follow. The API PNG checkpoint still has reproduced decode gaps when optional Pillow is absent, so its larger passing suite is not sufficient evidence of correctness. See [STATUS-2026-10-03.md](STATUS-2026-10-03.md) for the detailed milestone assessment.
+## Scientific and credential limits
 
-Lead verification after producer recovery: published orbit-fix 1873426b was composed with API a3f94b3 and integration tests 49ac9ff9 in /tmp/forestwatch-composed, using pyproject/uv.lock at237d45e. Command: uv run --frozen pytest tests/integration tests/backend tests/processing/test_change.py -q. Result: 262 passed, one Starlette TestClient dependency deprecation warning, 6.09 seconds. This closes the tested orbit contract failure and establishes prepared synthetic rasters -> actual bundle -> API behavior. It is not a merged implementation or proof of real RADARSAT-2 processing. Outstanding independent-review findings remain assigned to their owners.
+No unsupported cause classifications or confidence percentages. Priority is a disclosed magnitude/area index. Two acquisitions do not establish later persistence or historical anomaly. Matching grids do not establish measured registration. Catalog metadata, ancillary forest-loss proxies and synthetic tests do not establish real SAR change validity.
 
-Current-head regression: producer50f4b483 changed publication to versioned generations with a symlink pointer, while APIada6457c rejects a symlink bundle root. Lead ran uv run --frozen pytest tests/integration -q --maxfail=2 against those exact heads: two failures (API state error/503), stopped early. The earlier262-pass result belongs to1873426b/a3f94b3 and must not be read as current-head success. Owners are coordinating generation-pinned API reads and immutable producer generations; no auto pruning or reuse may delete a pinned reader's files. Final re-review and combined tests remain required.
+Do not authenticate as an agent. Do not put credentials or tokens in chat, prompts, logs, files or configuration. The signed-URL interruption finding is being corrected because it conflicts with this requirement.
 
-Recovered source is now remotely verified for acquisitionad01dabf, inventoryb3fb1ecd, catalog05da39bf and calibration2aba9b2d. Four independent final reviewers are running; acquisition still has directly reproduced security/behavior issues under correction. Lead independently re-executed inventoryb3fb1ecd:46passed, six expected georeferencing-fixture warnings,1.37seconds. The primary-only three-product STAC selection was restored under ignored data/reports/acquisition.
+## Latest evidence checkpoint
 
-API corrections are published through66cb7af5: worker recorded268passing tests; recovery agent independently closed overflowing JSON, CORS preflight, malformed PNG and excessive-pixel decoder probes. The same owner is now implementing compatibility with producer generation pointers; final approval remains pending. Producer50f4b483 has59independently re-executed passing component tests but fails the current combined gate because of pointer policy. Further producer fixes preserve unique immutable generations and avoid deleting old reader data. Acquisition owner is actively adding tamper checks, real Click multiple-download tests and redaction; no credential command has been issued.
+Lead independently exported exact APIb88, producer8027 and integrationeda4 with frozen setup237 into /tmp/forestwatch-checkpoint-401. Command: uv run --frozen pytest tests/integration tests/backend tests/processing/test_change.py -q. Result: 401 passed, one Starlette/httpx dependency warning, 9.37 seconds. This validates prepared synthetic rasters -> producer bundle -> API on these exact heads, not real RADARSAT-2 preprocessing or a validated change event.
 
-Monitoring correction: SwarmForge sometimes reports provider retry errors, unchanged token totals and pending_messages1 while the current worker is executing. Recovery agents confirmed execution by matching newest OpenCode assistant parent IDs to current dispatch messages and observing actual source edits. Do not restart or duplicate owners merely because the control-plane counters are stale. Completed exact-head reports with stale result IDs are normalized only after source/tests/final assistant completion match; source publication is separately remote-verified.
-
-Generation compatibility checkpoint: APIb109bfc7 is now published. Lead combined run withproducer50f4b483 andintegration49ac9ff9:378passed,3failed,7.70seconds. Producer-generatedbundles nowserve correctly; remainingthreeassertionsencodeolderimageryURLs/errorwording. Integrationtestowner is verifyingactualdeclaredepochURLs,409stalerequests andsanitizedpointererrors ratherthanweakeningbehaviorchecks. Hotgeneration-rootcontainment remainsanAPIcorrectivefollowup; nofinalapproval ormergedproducer/API yet.
-
-1. Recover current-run reports and exact published heads; preserve artifacts, independently review new implementations and remaining fixes.
-2. Make acquisition credential handling reviewable and safe, then give the user the exact interactive authentication/download command. Authentication requires the user; unrelated work continues.
-3. Download only the primary selected scenes, inspect actual products, and determine minimum calibration/geocoding/alignment from evidence.
-4. Integrate approved backend branches and establish a bounded real-data vertical slice, checking speckle, geometry, registration, water/terrain and radiometric differences.
-5. Supply actual results to teammates' dashboard, select a validated real region and rehearse the five-minute presentation.
-
-## Scientific limits
-
-No cause classifications or confidence percentages. Priority is a disclosed magnitude/area index. Two acquisitions cannot establish subsequent persistence or historical anomaly. Catalog metadata and synthetic tests do not prove real-data scientific validity. Every future status update must distinguish implementation, independent review, integration and real-data validation.
+The acquisition coordinator reproduced transient raw-output and manifest-token persistence with static sentinels and no authentication. Owner run0290d1f6-e309-40cc-9a80-dc6b21ff2593 corrects persistence before redaction and real-home test reads. Reviewer amendment9dd99998-0757-40b3-b922-4c3a461af22f accounts for the stricter user requirement.

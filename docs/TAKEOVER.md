@@ -1,6 +1,6 @@
 # Takeover guide and goal ledger
 
-Updated: 2026-10-03. Read this first, then [PROGRESS.md](PROGRESS.md) and [STATUS-2026-10-03.md](STATUS-2026-10-03.md). These documents must be updated after meaningful evidence, fixes, reviews, integration, downloads and validation. They are snapshots; query live workers and exact remote heads before acting.
+Updated: 2026-10-03 12:39 UTC. Read this first, then [PROGRESS.md](PROGRESS.md) and [STATUS-2026-10-03.md](STATUS-2026-10-03.md). These documents must be updated after meaningful evidence, fixes, reviews, integration, downloads and validation. They are snapshots; query live workers and exact remote heads before acting.
 
 ## Mission and authority
 
@@ -39,12 +39,14 @@ Temporary directories disappeared once when the lead environment restarted. Remo
 
 ## Current priorities and evidence
 
-1. **Acquisition is the real-data blocker.** Published ad01dabf063df22491d002db091a8ed4ff0a22bf has72 tests reported but independent review requested changes: dirty executable trees pass HEAD-only pins, selection limit is not enforced locally. Lead recovery additionally reproduced real Click SystemExit ending a multi-UUID loop after its first success and found signed-URL sanitization absent. Reviewer disagreements must be resolved by actual real-Click probes, not mocks. Owner is actively fixing these in run8a4e6680-5491-46f2-9029-a8923edd8ada; integrity/redaction/new regression files were dirty at last check. Do not issue credentials yet.
-2. **Latest producer/API combined gate is red.** Producer50f4b48379700c85a10f18f78db397ccf98bacac has59 tests independently re-run, but its atomic-generation symlink is rejected by API66cb7af51cf0037e6c752ca96d56a4197d7b6f12. Lead combined run stopped after two failures, APIerror/503. Owners are coordinating supported sibling pointers, generation-pinned reads, unique immutable generations and no automatic pruning. API stale imagery requests now have a proposed analysis_id query/409 behavior; document/review actual final implementation before giving frontend instructions.
-3. **API correctness fixes progressed.** Published66cb7af5 has268 worker tests; recovery probes verify overflow1e400 rejects globally, CORS preflight works, malformed/filter/zlib-truncated PNGs reject, excessive-pixel decoder bombs are controlled. Current compatibility run de71fe6c-64ee-4aab-b50b-04510ffbec4d is executing; one queued hot-read containment followup964e887e-2224-4333-bb84-2b0b3d13b8fa covers a pinned generation replaced with an outside symlink returning outside PNG bytes. No final approval yet.
-4. **Inventory is approved and merged.** Exact b3fb1ecdcce909b686a1b2badeaa8eb122d00a73 approved by reviewerw-8038e552-88a7-4685-89f6-5c7f425b77ff, including116 independent probe assertions and mutation tests. Lead merged only its three owned files; integration re-run46 passed, six expected unreferenced-fixture warnings,1.24seconds.
-5. **Calibration preflight is scientifically rejected.** 2aba9b2dd8cabf24edbd12ce4d51eb7396299e96 passes50 tests that encode wrong assumptions. Reviewer proved fabricated LUT schema, wrong driver names and raw/calibrated DN confusion. Do not integrate it. Its owner has corrective run111d259f-7ac3-46d1-bca6-b5bf84e95788. Required: real RS2 dataType/lookupTable element-text/positional gains schema; proper raw vs calibrated and complex gain semantics; path containment and honest unknowns.
-6. **Catalog/contract auxiliary changes need review.** Catalog report05da39bf has validated selection but needs revision/origin metadata and non-vacuous verifier fixes (run8b88026b-64af-4ac4-ae3c-4ac93d4a8347). Selector16076a68 had42 tests but touching intersections, nonfinite size guards and sanitizer bypasses were reproduced; owner continuing. Dashboard handoff was corrected to10d5ae0 after earlier baseline/threshold errors but must be re-reviewed against final API.
+1. **Acquisition is the real-data blocker.** Published `eb692bc809f83164876303ce874a378a79bb1258` fixes executable/dependency integrity, real Click multi-UUID handling, local selection limits, redaction and restoration. Independent reviewer `w-107444be-e734-43a4-b282-f75d2905f770` returned APPROVED: 97 passed, one setup-only skip, plus 14 independent probes. However its warning W3 proves interruption can leave signed URLs in downloads.jsonl. The lead considers this incompatible with the user's no-credentials-in-artifacts instruction. `/root/recover_swarm_state` is coordinating one narrow followup with the existing owner: redact before persistence, avoid raw fd capture tempfiles, preserve usable progress, and prove interrupted execution cannot persist token sentinels. Do not issue a credential command yet.
+2. **Acquisition bootstrap/doctor work locally; the full local test run is unresolved.** In `/tmp/forestwatch-acquisition-ready`, exported exact eb692bc, pinned bootstrap completed and doctor exited 0 with 61 verified distributions. System Python 3.10 lacked ensurepip; only this scratch tools venv was recreated using the project's managed Python 3.13. The local tests ran over eight minutes at high CPU and were interrupted: seven passed, one skipped; stack at tests/acquisition/helpers.py:57, scanning files for sentinels. Do not report this as a passing 98-test local suite. The recovery coordinator is diagnosing the scan with bounded runs; no real credentials were used.
+3. **Latest producer/API source is durable; final approval and combined verification are pending.** Producer `8027d7bd2b84f553a9d904f6473c7f8db5ae8d5d`: 63 independently rerun passing component tests, immutable unique generations with no pruning. API `b88dd5b7218575280e83b118d0a260661f61bbbd`: 308 independently rerun passing tests, strict supported generation pointers, pinned hot-read containment, epoch URLs and stale-image 409. Exact-head reviewers are `w-6bd49356-38ce-4a7e-8bd3-283248d43205` and `w-1e26dd13-ed66-46e0-a834-cd5c83269320`. `/root/recover_producer` monitors both. Neither implementation is merged.
+4. **Current combined prepared-data tests are green; reviews remain pending.** Producer8027/APIb88/integrationfbfa had five failures caused by a helper comparing API route basename `before` to disk filename `before.png`, rather than a confirmed pipeline regression. Existing test owner committed `35964ec0a3dbe1f8109265263cdba198e2ad6824`. Native `/root/api_corrections` supplied verified full bundles for APIb88, producer8027 and setup237, and queued composition run `468f02bd-f207-4e83-bd0b-b7d726e145b6`. Owner composition passed 401 tests. Lead independently reassembled exact APIb88 + producer8027 + integrationeda4c6fb22fd2a4669647bc51ca91ab0247553dd with setup237 in /tmp/forestwatch-checkpoint-401: uv run --frozen pytest tests/integration tests/backend tests/processing/test_change.py -q -> 401 passed, one dependency deprecation warning, 9.37 seconds under Python 3.13.15. Independent suite review and implementation approvals remain required. Earlier 262-pass and 378-pass/3-failure checkpoints are history, not current approval.
+5. **Inventory is approved and merged.** Exact `b3fb1ecdcce909b686a1b2badeaa8eb122d00a73` approved by `w-8038e552-88a7-4685-89f6-5c7f425b77ff`, including 116 independent assertions and mutation tests. Integrated at `59869bc2`; lead suite: 46 passed, six expected unreferenced-fixture warnings, 1.24 seconds.
+6. **Calibration preflight remains blocked.** Published `2aba9b2dd8cabf24edbd12ce4d51eb7396299e96` encodes wrong science despite 50 tests. Corrective run `111d259f-7ac3-46d1-bca6-b5bf84e95788` must use real RS2 XML/dataType/lookupTable element-text and positional gains, distinguish raw Mag from calibrated SIGMA0 and complex gain semantics, and contain paths. `/root/recover_producer` is checking execution/report durability before its deadline. No approval is implied.
+7. **Auxiliary deliverables need followup/review.** Catalog published `05da39bf312fcf6b66ea5cad2e075283aed440f9`; its correction run `8b88026b-64af-4ac4-ae3c-4ac93d4a8347` timed out, so inspect actual VM completion before redispatch. Selector published `16076a68bc44558c84907ebb3361c5b18322fc94`; correction run `622bee53-af8a-4ab4-a9da-5bc8d74ef587` also needs source/result recovery. Registration fixes are published at `2dcd157c4d659478dab6f4f3068584acb3be7112`, awaiting final review. Dashboard contract is `7351140a79b6ca0303753abe61fa30ddb8615272`, documenting declared imagery URLs and epoch 409, awaiting final review. No frontend edits.
+8. **Ancillary validation research is running.** `w-8c27c80d-af9a-420e-9309-262e2197e38c` is examining official forest-cover/loss references for the selected area under a 20-request/50-MiB bound. These are possible validation targets, not SAR detections, cause labels or ground truth. No real change example has been selected.
 
 ## Data state and next user action
 
@@ -104,12 +106,12 @@ States below are snapshots and may lag real execution. Re-query before dispatch 
 | sar-science-recon | w-654d852d-05ed-419f-b364-069713220323 | researcher | destroyed |
 | dashboard-science-review | w-8093558c-8b91-4c1b-a2d8-f43419432e14 | reviewer | destroyed |
 | repository-checkout-smoke | w-5e9b09b9-9222-4292-b7a8-e6fe9070a268 | reviewer | destroyed |
-| acquisition-cli | w-544f8b0e-1b02-45a0-a6dd-4aa76c2bf1f2 | coder | running |
-| catalog-scene-selection | w-52812be0-5278-4df1-98d8-affa52949791 | researcher | running |
+| acquisition-cli | w-544f8b0e-1b02-45a0-a6dd-4aa76c2bf1f2 | coder | recovery_required |
+| catalog-scene-selection | w-52812be0-5278-4df1-98d8-affa52949791 | researcher | recovery_required |
 | raw-product-inventory | w-afc4b51c-3712-4881-a287-074041a72204 | coder | recovery_required |
-| backend-api | w-637aa6d9-c6aa-4745-aca8-375d93277e9f | coder | running |
+| backend-api | w-637aa6d9-c6aa-4745-aca8-375d93277e9f | coder | completed |
 | scientific-gates | w-9c0c6601-04c7-480f-8585-437239e143af | reviewer | completed |
-| prepared-pair-change | w-2fe278d1-50ee-4dad-903f-524abbe93fa3 | coder | running |
+| prepared-pair-change | w-2fe278d1-50ee-4dad-903f-524abbe93fa3 | coder | completed |
 | integration-review | w-29423311-eb9e-4396-8f6f-dba7365b7e63 | reviewer | completed |
 | review-raw-product-inventory | w-f0c2bebe-ff3a-47fc-bc2d-59ef328f6e0a | reviewer | completed |
 | review-catalog-scene-selection | w-5e2051bf-59c0-4207-a559-42f7d5a5232a | reviewer | completed |
@@ -117,10 +119,10 @@ States below are snapshots and may lag real execution. Re-query before dispatch 
 | review-acquisition-security | w-ed15e6dd-61cd-4ce1-a439-5ed249791cd7 | reviewer | completed |
 | sgf-preprocessing-route | w-69e73c70-ee18-4473-8b83-986b8b762275 | researcher | completed |
 | review-prepared-pair-change | w-7797c47f-9903-45b0-bbb7-70e3b15b2ae0 | reviewer | completed |
-| offline-bundle-api-tests | w-aa748747-0c64-4955-96b5-f443faab8929 | coder | completed |
+| offline-bundle-api-tests | w-aa748747-0c64-4955-96b5-f443faab8929 | coder | running |
 | offline-registration-diagnostics | w-47286095-410b-4a35-bb21-ac93030eebdc | coder | completed |
 | offline-calibration-preflight | w-e638ceed-e7d9-40e5-8c55-34ebdb5a146f | coder | running |
-| offline-catalog-selector | w-c929c0c3-f4a3-4350-a1fb-0ea93bc5b793 | coder | running |
+| offline-catalog-selector | w-c929c0c3-f4a3-4350-a1fb-0ea93bc5b793 | coder | recovery_required |
 | offline-dashboard-contract | w-d369b818-8114-4354-9a4c-d1541c52cae5 | coder | completed |
 | offline-demo-runbook | w-f424f4c0-d0a7-4edb-a697-6d82775a662b | coder | completed |
 | offline-pipeline-performance | w-d21af2d9-df20-4bce-9f26-3eb99c03a2c1 | reviewer | completed |
@@ -139,9 +141,26 @@ States below are snapshots and may lag real execution. Re-query before dispatch 
 | review-inventory-final | w-8038e552-88a7-4685-89f6-5c7f425b77ff | reviewer | completed |
 | review-calibration-preflight-science | w-ba6ffc8d-37e3-4de6-aa6a-0fd4481a2dba | reviewer | completed |
 | review-catalog-report-final | w-cf66d38d-ad88-4d0d-84c4-49cd1a6cbf9c | reviewer | completed |
+| review-acquisition-eb692-final | w-107444be-e734-43a4-b282-f75d2905f770 | reviewer | completed |
+| review-producer-8027-final | w-6bd49356-38ce-4a7e-8bd3-283248d43205 | reviewer | running |
+| review-api-b88-final | w-1e26dd13-ed66-46e0-a834-cd5c83269320 | reviewer | running |
+| historical-forest-validation-target | w-8c27c80d-af9a-420e-9309-262e2197e38c | researcher | running |
 
 ## Next takeover actions
 
 Collect current acquisition/API/producer final heads and reports first. Give independent reviewers the new exact heads, including real Click credentials-boundary probes and producer/API generation compatibility tests. Correct current source before merging. Finish catalog/selector/registration/contract reviews only as needed for the vertical slice. Keep calibration-preflight rejected until actual schema/science passes. Request the user-only EODMS action as soon as safe, then prioritize real scenes over further generic framework features.
 
-Latest combined update after this guide was drafted: APIb109bfc739642140bad2db297a3332fd61445a93 is published. Againstproducer50f4b483 +integration49ac9ff9 theleadgot378passed/3failed in7.70seconds: theactualbundle-to-API path works; remainingassertionshardcodepre-epochimageryURLs andoldsanitizederrortext. Theintegrationtestowner has a boundedbehavior-preservingcontractupdate; dashboardcontractowner has theactualdeclaredURL/409handoffupdate. Hotgenerationrootcontainment followup964e887e remainspending. Do notreport thischeckpointasallgreen orapproved.
+Immediate handoff order:
+
+1. Query existing native coordinators before duplicating any work. Acquisition safety correction is owned by `/root/recover_swarm_state`; integration composition by `/root/api_corrections`; producer/API reviews and calibration recovery by `/root/recover_producer`.
+2. Preserve independent reports and exact source objects; resolve demonstrated findings with existing owners and obtain approval for each new head.
+3. Run the exact current producer/API/integration composition under the frozen environment; then integrate only independently approved source, preserving teammate changes.
+4. Finish safe acquisition, bootstrap it locally, provide the user-only interactive command and obtain real product bytes. Do not ask the user to install Python to resolve the already understood local ensurepip mismatch.
+5. Dispatch actual dataset reconnaissance immediately when files appear. Determine calibration, geocoding and measured registration from delivered products before implementing a raw adapter.
+6. Produce and validate a real bundle, supply the reviewed frontend contract and a concrete real result to human teammates, select a validated example and rehearse the presentation.
+
+Latest reviewer finding: producer reviewer completed inspection of exact 8027d7bd and requested changes because emitted preprocessing metadata still says minimum-area filtering uses mean geodesic cell area, while the implementation now uses exact polygon area. Existing owner will fix this stale scientific description; 63 component tests and seven independent probes passed. Its concurrent publication experiment recorded 121,258 pinned reads without mixed generations. This is useful evidence, not approval of the stale metadata or a real-data validation.
+
+Latest calibration recovery: the native coordinator found a completed clean VM commit `4fb2b7133ae16263d4a9262702b76831b75be221`, reported 57 passing tests, but stale report identity and no remote publication yet. Coordinator is re-verifying, preserving and publishing it. Do not substitute that report for approval or assume remote durability until verified.
+
+Acquisition safety followup: existing owner run0290d1f6-e309-40cc-9a80-dc6b21ff2593; reviewer amendment run9dd99998-0757-40b3-b922-4c3a461af22f. Native coordinator reproduced raw fd-capture tempfile persistence and raw upstream manifest persistence with static sentinels only: both present during execution, absent after normal cleanup. Redaction must precede persistence. Full-home sentinel scanning caused the local stall; test helpers and decoy config fixtures must use wholly synthetic owned paths and must not read/restore an existing real ~/.eodms/config.ini or scan unrelated home contents. No real authentication was performed.

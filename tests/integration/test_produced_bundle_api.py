@@ -90,8 +90,8 @@ ORIGIN_Y = 4_000_020.0
 GRID_SIZE = 40
 BASE_POWER = 0.2
 PATCH_RATIO = 2.0  # +3.0103 dB, comfortably above a 2 dB threshold
-PATCH_ROWS, PATCH_COLUMNS = slice(12, 24), slice(12, 24)  # 12x12 = 1.296 ha before filtering
-TINY_ROWS, TINY_COLUMNS = slice(30, 33), slice(30, 33)  # 3x3 = 0.081 ha
+PATCH_ROWS, PATCH_COLUMNS = slice(12, 24), slice(12, 24)  # 12x12 cells = 12.6101 ha outer ring; 11.1689 ha reported once the hole is subtracted (delta 1.4412 ha)
+TINY_ROWS, TINY_COLUMNS = slice(30, 33), slice(30, 33)  # 3x3 = 0.4504 ha served
 HOLE_ROWS, HOLE_COLUMNS = slice(15, 19), slice(15, 19)  # unchanged block inside the patch
 MISSING_ROWS, MISSING_COLUMNS = slice(2, 8), slice(2, 8)  # isolated nodata block, outside the patch
 

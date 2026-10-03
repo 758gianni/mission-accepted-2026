@@ -8,14 +8,14 @@ Not owned here: `backend/`, `processing/`, `pyproject.toml`, `uv.lock`, `fronten
 
 ## Exact composition these results come from
 
-Executed in a scratch checkout (`/tmp/opencode/latest`), never merged into the test
-branch and never committed as source:
+Executed in a throwaway scratch checkout outside this branch, never merged into
+it and never committed as source:
 
 | component | head |
 | --- | --- |
-| producer | `8027d7bd2b84f553a9d904f6473c7f8db5ae8d5d` (bundle `/tmp/producer-8027d7bd.bundle`) |
-| API | `b88dd5b7218575280e83b118d0a260661f61bbbd` (bundle `/tmp/api-b88-full.bundle`) |
-| integration setup (`pyproject.toml`, `uv.lock`) | `237d45ea506dc17d3b348f93b7cc13dfa5801ff3` (bundle `/tmp/setup-237-full.bundle`) |
+| producer | `8027d7bd2b84f553a9d904f6473c7f8db5ae8d5d` |
+| API | `b88dd5b7218575280e83b118d0a260661f61bbbd` |
+| integration setup (`pyproject.toml`, `uv.lock`) | `237d45ea506dc17d3b348f93b7cc13dfa5801ff3` |
 | base required by all three bundles | `3262dcb8d9fb79b1d35e2fc94cbba13557e41d33` |
 
 Environment: `uv sync --frozen` from the integration lock; CPython 3.12.3,
@@ -43,7 +43,7 @@ The suite skips explicitly (module-level `pytest.skip`, not a silent pass) when
 merges the implementations:
 
 ```
-SKIPPED [1] tests/integration/test_produced_bundle_api.py:70: backend.app (API) is not
+SKIPPED [1] tests/integration/test_produced_bundle_api.py:72: backend.app (API) is not
 present in this checkout (No module named 'backend'). ...
 ```
 
@@ -53,7 +53,7 @@ Run it from the repository root with the shared integration environment:
 python -m pytest tests/integration -q
 ```
 
-## Checklist covered (26 tests)
+## Checklist covered (30 collected tests)
 
 | Area | What is asserted |
 | --- | --- |
@@ -132,7 +132,7 @@ Owner options (not applied here, both are outside this package):
 
 Evidence that the rest of the suite is sound: with `relative_orbit: null` in the
 fixture manifest (scratch-only substitution, **not** applied to the committed
-test file) all **26** integration tests pass against the same two heads, and the
+test file) all **30** integration tests pass against the same two heads, and the
 two tests that pass even with the defect are the ones that assert the *negative*
 states (`state == "error"` for a symlinked bundle directory, and a half-published
 bundle being refused).
@@ -149,8 +149,13 @@ bundle being refused).
 2. **Stale generation is refused.** After a second producer run into the same
    bundle directory, the previous URLs must answer `409 Conflict` and must never
    return the new bytes; the current URLs must return exactly the current bytes.
-   The reverse interleaving is covered too: previews written before their
-   `analysis.json` must not be served under the old analysis id.
+   **Not covered:** the reverse interleaving - previews already on disk while
+   their own `analysis.json` is absent. No test removes `analysis.json`; the
+   half-published cases only run the other way, with a valid `analysis.json`
+   and a missing `regions.geojson` (`test_half_published_bundle_is_not_served`)
+   or a damaged `change.png` (`test_damaged_preview_is_refused_then_repaired`).
+   A preview-written-first publication is therefore untested, and this suite
+   must not be read as evidence for it.
 3. **Sanitised status messages.** The message is now a relative contract pointer.
    The tests assert the invariant instead of the wording: the message is non-empty
    and leaks no filesystem path (bundle dir, symlink target, temp root, or the

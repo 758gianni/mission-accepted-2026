@@ -1266,7 +1266,7 @@ def preflight(
         imagery_section,
         _calibration_output(representation),
         capabilities,
-        expected_driver if expected_driver is None else expected_driver,
+        expected_driver,
         report,
         driver_present=driver_present,
         require_gdal_driver=require_gdal_driver,

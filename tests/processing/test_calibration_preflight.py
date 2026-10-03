@@ -814,6 +814,23 @@ def test_oversized_sigma_lut_is_refused_without_parsing(tmp_path: Path) -> None:
     assert report["sigma_lut"]["gain_count"] == 0
 
 
+def test_expected_driver_identity_is_reported_for_the_declared_product_type(
+    tmp_path: Path,
+) -> None:
+    # A dedicated-driver product type reports the driver name plus its measured
+    # presence; a type needing no special driver reports no route at all.
+    sgf = cp.preflight(
+        make_product(tmp_path / "a", product_type="SGF", sample_type="MAG", bits=16)
+    )
+    scc = cp.preflight(make_product(tmp_path / "b"))
+
+    sgf_caps = sgf["gdal_capabilities"]
+    assert sgf_caps["expected_driver_for_product_type"] == "SGF"
+    assert sgf_caps["expected_driver_present"] == sgf_caps["drivers"]["SGF"]["present"]
+    assert scc["gdal_capabilities"]["expected_driver_for_product_type"] is None
+    assert scc["gdal_capabilities"]["expected_driver_present"] is None
+
+
 def test_invalid_width_semantics_is_rejected(tmp_path: Path) -> None:
     product = make_product(tmp_path)
 

@@ -20,3 +20,8 @@ Thumbs.db
 # JavaScript dependencies and build output
 node_modules/
 dist/
+
+# Local processing and worker runtime output
+__pycache__/
+.pytest_cache/
+/data/*.log

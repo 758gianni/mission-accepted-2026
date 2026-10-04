@@ -1,65 +1,79 @@
+import { Eye, EyeOff, Layers, LocateFixed, Mountain, Satellite, Waves } from 'lucide-react';
 import { useMemo, type FC } from 'react';
-import { ChangeMap } from './components/change-map';
-import type { ChangeMode } from './change-modes';
-import type { ClearingType } from './types';
+import { ChangeMap, type MapView } from './components/change-map';
+import { AcquisitionEvidence } from './components/sidebar';
+import { filterCandidates, type CandidateFeature, type CandidateFilter, type DashboardContract } from './terra-data';
+
+export type MapLayer = 'temporal_rgb' | 'seasonal_transient' | 'persistent_candidates' | 'terrain_qa_mask' | 'coverage';
 
 interface AppProps {
-	mode: ChangeMode;
-	clearings: ClearingType[];
-	selectedClearingId: string;
-	swipePosition: number;
-	showClearings: boolean;
-	showBoundary: boolean;
-	sensitivity: number;
-	onSwipePositionChange: (value: number) => void;
-	onShowClearingsChange: (value: boolean) => void;
-	onShowBoundaryChange: (value: boolean) => void;
-	onSensitivityChange: (value: number) => void;
+	contract: DashboardContract;
+	features: CandidateFeature[];
+	filter: CandidateFilter;
+	selectedId: string | number | null;
+	layer: MapLayer;
+	view: MapView;
+	showFootprints: boolean;
+	onFilter: (filter: CandidateFilter) => void;
+	onSelect: (feature: CandidateFeature) => void;
+	onLayer: (layer: MapLayer) => void;
+	onView: (view: MapView) => void;
+	onToggleFootprints: () => void;
+	onReset: () => void;
 }
 
-const App: FC<AppProps> = ({ mode, clearings, selectedClearingId, swipePosition, showClearings, showBoundary, sensitivity, onSwipePositionChange, onShowClearingsChange, onShowBoundaryChange, onSensitivityChange }) => {
-	const selected = useMemo(() => clearings.find((clearing) => clearing.id === selectedClearingId) ?? clearings[0], [clearings, selectedClearingId]);
+const filterOptions: Array<{ id: CandidateFilter; label: string }> = [
+	{ id: 'all', label: 'All signals' },
+	{ id: 'seasonal_transient', label: 'Seasonal' },
+	{ id: 'persistent', label: 'Persistent' },
+	{ id: 'validated', label: 'Independent support' },
+	{ id: 'late_unclassified', label: 'Late / new' },
+	{ id: 'qa_cleared', label: 'QA screen pass' },
+];
+
+const layers: Array<{ id: MapLayer; label: string; icon: typeof Layers }> = [
+	{ id: 'temporal_rgb', label: 'Temporal behaviour', icon: Satellite },
+	{ id: 'seasonal_transient', label: 'Seasonal signal', icon: Waves },
+	{ id: 'persistent_candidates', label: 'Persistent signal', icon: LocateFixed },
+	{ id: 'coverage', label: 'Observation coverage', icon: Waves },
+	{ id: 'terrain_qa_mask', label: 'Terrain QA', icon: Mountain },
+];
+
+const App: FC<AppProps> = ({ contract, features, filter, selectedId, layer, view, showFootprints, onFilter, onSelect, onLayer, onView, onToggleFootprints, onReset }) => {
+	const visible = useMemo(() => filterCandidates(features, filter), [features, filter]);
+	const availableFilters = filterOptions.filter((item) => item.id !== 'qa_cleared' || features.some((feature) => Boolean(feature.properties.screening)));
+	const counts = Object.fromEntries(availableFilters.map((item) => [item.id, filterCandidates(features, item.id).length]));
+	const selected = visible.find((feature) => String(feature.properties.id) === String(selectedId));
 
 	return (
-		<main className='min-w-0 px-5 pb-8 pt-6 sm:px-8 flex flex-[999_1_640px] flex-col gap-3.5'>
-			<div className='grid grid-cols-[44px_minmax(0,1fr)] grid-rows-[22px_auto]'>
-				<div />
-
-				<div className='px-0.5 flex flex-row justify-between font-cond text-[13px] text-muted'>
-					<span>[lon 1]</span>
-					<span>[lon 2]</span>
-					<span>[lon 3]</span>
-					<span>[lon 4]</span>
-					<span>[lon 5]</span>
-				</div>
-
-				<div className='py-1.5 flex flex-col justify-between font-cond text-[13px] text-muted'>
-					<span>[lat 1]</span>
-					<span>[lat 2]</span>
-					<span>[lat 3]</span>
-				</div>
-
-				<ChangeMap mode={mode} clearings={clearings} selectedClearingId={selectedClearingId} swipePosition={swipePosition} showClearings={showClearings} showBoundary={showBoundary} sensitivity={sensitivity} onShowClearingsChange={onShowClearingsChange} onShowBoundaryChange={onShowBoundaryChange} onSensitivityChange={onSensitivityChange} />
+		<section className='ts-map-column' aria-label='Regional anomaly map'>
+			<div className='ts-map-heading'>
+				<div><span className='ts-eyebrow'>REGIONAL DISCOVERY</span><h2>Change intelligence map</h2></div>
+				<div className='ts-map-heading-meta'><span className='ts-orbit-mark' />{contract.scene?.beam ?? 'SAR'} · {contract.scene?.polarization ?? 'multi-band'} · {contract.scene?.orbit ?? 'multi-orbit'}</div>
 			</div>
-
-			<label className='ml-11 flex items-center gap-3.5 text-[15px]'>
-				<span className='font-semibold'>Before</span>
-				<input type='range' min='0' max='100' value={swipePosition} onChange={(event) => onSwipePositionChange(Number(event.target.value))} aria-label='Slide to compare the two dates' className='min-h-[32px] flex-1' />
-				<span className='font-semibold'>After</span>
-			</label>
-
-			<section className='ml-11 flex flex-col gap-2 border-t border-rule pt-3'>
-				<h2 className='text-base font-semibold'>{mode.signal}, {selected.name.toLowerCase()}</h2>
-				<p className='max-w-[70ch] text-sm text-muted'>{mode.description}</p>
-				<svg viewBox='0 0 900 140' className='h-[140px] w-full' role='img' aria-label={`${mode.signal}: illustrative trend, not measured data`}>
-					<line x1='30' y1='110' x2='860' y2='110' stroke='#C9CFC7' />
-					<polyline points={mode.points.map((y, i) => `${40 + i * 130},${y}`).join(' ')} fill='none' stroke={mode.color} strokeWidth={3} strokeLinejoin='round' />
-					{mode.points.map((y, i) => <g key={i}><circle cx={40 + i * 130} cy={y} r='4' fill={mode.color} /><text x={40 + i * 130} y='130' textAnchor='middle' fill='#56625B' fontSize={12}>Sample {i + 1}</text></g>)}
-					<text x='40' y='20' fill='#56625B' fontSize={13}>{mode.beforeLabel}</text>
-					<text x='565' y='20' fill={mode.color} fontSize={13}>{mode.afterLabel}</text>
-				</svg>
-			</section>
-		</main>
+			<nav className='ts-filter-rail' aria-label='Filter anomaly classes'>
+				{availableFilters.map((item) => <button key={item.id} type='button' aria-pressed={filter === item.id} onClick={() => onFilter(item.id)}>
+					<span>{item.label}</span><span className='ts-filter-count'>{counts[item.id] ?? 0}</span>
+				</button>)}
+			</nav>
+			<div className='ts-map-frame'>
+				<ChangeMap contract={contract} features={visible} selectedId={selectedId} layer={layer} view={view} showFootprints={showFootprints} onSelect={onSelect} onView={onView} />
+				<div className='ts-map-tools'>
+					<div className='ts-layer-menu' aria-label='Visualization layer'>
+						<span className='ts-layer-title'><Layers size={13} /> LAYER</span>
+						{layers.map(({ id, label, icon: Icon }) => <button key={id} type='button' title={label} aria-label={label} aria-pressed={layer === id} onClick={() => onLayer(id)}><Icon size={15} /><span>{label}</span></button>)}
+					</div>
+					<button className={`ts-map-toggle ${showFootprints ? 'is-on' : ''}`} type='button' aria-pressed={showFootprints} onClick={onToggleFootprints}>
+						{showFootprints ? <Eye size={14} /> : <EyeOff size={14} />} Acquisition footprints
+					</button>
+				</div>
+				<div className='ts-map-footer'>
+					<div className='ts-map-legend'>{layer === 'coverage' ? <><span className='ts-legend-dot is-coverage' /> 1–2 dates <span className='ts-legend-dot is-coverage-strong' /> 3+ dates <span className='ts-legend-dot is-uncovered' /> No observation</> : <><span className='ts-legend-dot is-seasonal' /> Seasonal <span className='ts-legend-dot is-persistent' /> Persistent <span className='ts-legend-dot is-validated' /> Independently supported</>}</div>
+					<div className='ts-map-footer-right'><span>{contract.tile_processing ? `${visible.length.toLocaleString()} detections shown · ${contract.tile_processing.tile_count ?? 0} tiles · ${contract.tile_processing.acquisition_count ?? 0} acquisitions · ${contract.tile_processing.acquisition_dates?.length ?? 0} dates` : `${visible.length.toLocaleString()} candidates`}{selected ? ` · Region ${selected.properties.id} focused` : ''}</span><a className='ts-map-attribution' href='https://www.openstreetmap.org/copyright' target='_blank' rel='noreferrer'>Natural Earth · © OpenStreetMap contributors</a><button type='button' onClick={onReset}><LocateFixed size={13} /> Fit study area</button></div>
+				</div>
+			</div>
+			{selected && <div className='ts-map-evidence'><AcquisitionEvidence contract={contract} candidate={selected} /></div>}
+		</section>
 	);
 };
 

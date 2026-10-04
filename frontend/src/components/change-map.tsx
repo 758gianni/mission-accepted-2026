@@ -1,141 +1,297 @@
 import { Minus, Plus } from 'lucide-react';
-import { motion, useReducedMotion } from 'framer-motion';
-import { useMemo, useState, type FC } from 'react';
-import type { ChangeMode } from '../change-modes';
-import type { ClearingType } from '../types';
+import { useEffect, useMemo, useRef, useState, type FC, type MouseEvent as ReactMouseEvent, type PointerEvent, type WheelEvent } from 'react';
+import { clusterCandidates, geometryCenter, geometryPath, getBasemapTiles, projectMapCoordinate, temporalClassOf, type AnalysisTile, type CandidateFeature, type DashboardContract, type GeoBounds } from '../terra-data';
+import type { MapLayer } from '../app';
+
+export const MAP_VIEW_WIDTH = 1400;
+export const MAP_VIEW_HEIGHT = 900;
+
+export interface MapView { zoom: number; x: number; y: number }
 
 interface ChangeMapProps {
-	mode: ChangeMode;
-	clearings: ClearingType[];
-	selectedClearingId: string;
-	swipePosition: number;
-	showClearings: boolean;
-	showBoundary: boolean;
-	sensitivity: number;
-	onShowClearingsChange: (value: boolean) => void;
-	onShowBoundaryChange: (value: boolean) => void;
-	onSensitivityChange: (value: number) => void;
+	contract: DashboardContract;
+	features: CandidateFeature[];
+	selectedId: string | number | null;
+	layer: MapLayer;
+	view: MapView;
+	showFootprints: boolean;
+	onSelect: (feature: CandidateFeature) => void;
+	onView: (view: MapView) => void;
 }
 
-const ChangeMap: FC<ChangeMapProps> = ({ mode, clearings, selectedClearingId, swipePosition, showClearings, showBoundary, sensitivity, onShowClearingsChange, onShowBoundaryChange, onSensitivityChange }) => {
-	const [zoom, setZoom] = useState(1);
-	const reduceMotion = useReducedMotion();
-	const selected = useMemo(() => clearings?.find((clearing: ClearingType) => clearing?.id === selectedClearingId) ?? clearings[0], [clearings, selectedClearingId]);
+const assetUrl = (value?: string | null) => value ? `/data/${value.replace(/^\//, '')}` : undefined;
+const fallbackBounds: GeoBounds = { west: -180, south: -80, east: 180, north: 80 };
+const roundPixel = (value: number) => Math.round(value * 100) / 100;
 
-	const [x, y, width, height] = selected.viewBox.split(' ').map(Number);
-	const centerX = zoom === 1 ? 500 : Math.max(500 / zoom, Math.min(1000 - 500 / zoom, x + width / 2));
-	const centerY = zoom === 1 ? 300 : Math.max(300 / zoom, Math.min(600 - 300 / zoom, y + height / 2));
-	const viewBox = `${centerX - 500 / zoom} ${centerY - 300 / zoom} ${1000 / zoom} ${600 / zoom}`;
+function tileTransform(tile: AnalysisTile, bounds: GeoBounds): string {
+	const northWest = projectMapCoordinate([tile.display_bounds.west, tile.display_bounds.north], bounds, MAP_VIEW_WIDTH, MAP_VIEW_HEIGHT);
+	const southEast = projectMapCoordinate([tile.display_bounds.east, tile.display_bounds.south], bounds, MAP_VIEW_WIDTH, MAP_VIEW_HEIGHT);
+	const a = (southEast[0] - northWest[0]) / (tile.preview_width ?? tile.width);
+	const d = (southEast[1] - northWest[1]) / (tile.preview_height ?? tile.height);
+	return `matrix(${roundPixel(a)} 0 0 ${roundPixel(d)} ${roundPixel(northWest[0])} ${roundPixel(northWest[1])})`;
+}
+
+function basemapTransform(tileBounds: GeoBounds, bounds: GeoBounds): string {
+	const northWest = projectMapCoordinate([tileBounds.west, tileBounds.north], bounds, MAP_VIEW_WIDTH, MAP_VIEW_HEIGHT);
+	const southEast = projectMapCoordinate([tileBounds.east, tileBounds.south], bounds, MAP_VIEW_WIDTH, MAP_VIEW_HEIGHT);
+	return `matrix(${(southEast[0] - northWest[0]) / 256} 0 0 ${(southEast[1] - northWest[1]) / 256} ${northWest[0]} ${northWest[1]})`;
+}
+
+interface DragState { pointerId: number; startView: MapView; startX: number; startY: number; moved: boolean }
+
+const ChangeMap: FC<ChangeMapProps> = ({ contract, features, selectedId, layer, view, showFootprints, onSelect, onView }) => {
+	const bounds = contract.map_bounds ?? contract.scene?.footprint ?? fallbackBounds;
+	const imageBounds = contract.image_bounds ?? contract.scene?.footprint ?? bounds;
+	const [displayView, setDisplayView] = useState(view);
+	const displayViewRef = useRef(view);
+	const viewCallbackRef = useRef(onView);
+	const svgRef = useRef<SVGSVGElement>(null);
+	const [screenScale, setScreenScale] = useState(1);
+	useEffect(() => {
+		const svg = svgRef.current;
+		if (!svg) return;
+		const observer = new ResizeObserver(() => setScreenScale(svg.getScreenCTM()?.a ?? 1));
+		observer.observe(svg);
+		return () => observer.disconnect();
+	}, []);
+	const dragRef = useRef<DragState | null>(null);
+	const [isDragging, setIsDragging] = useState(false);
+	const [showStreetDetail, setShowStreetDetail] = useState(false);
+	const [contextFeatures, setContextFeatures] = useState<CandidateFeature[]>([]);
+	useEffect(() => {
+		if (!contract.geographic_context?.asset) return;
+		let active = true;
+		fetch(`/data/${contract.geographic_context.asset}`).then((response) => response.json()).then((data) => { if (active) setContextFeatures(data.features); }).catch(() => {});
+		return () => { active = false; };
+	}, [contract.geographic_context?.asset]);
+	const [aggregateDetections, setAggregateDetections] = useState(true);
+	const selected = features.find((feature) => String(feature.properties.id) === String(selectedId));
+	const tileProducts = contract.tiles ?? [];
+	const basemapTiles = useMemo(() => getBasemapTiles(bounds, displayView, MAP_VIEW_WIDTH, MAP_VIEW_HEIGHT),
+		[bounds, displayView]);
+	const imagePath = assetUrl(contract.imagery?.[layer]);
+	const imageLayout = contract.imagery_layout?.[layer];
+	const clusters = useMemo(() => clusterCandidates(features, bounds, MAP_VIEW_WIDTH, MAP_VIEW_HEIGHT, 44 / Math.max(view.zoom, 0.5), projectMapCoordinate),
+		[features, bounds, view.zoom]);
+	const candidatePoints = useMemo(() => features.map((feature) => ({
+		feature,
+		center: geometryCenter(feature.geometry, bounds, MAP_VIEW_WIDTH, MAP_VIEW_HEIGHT, projectMapCoordinate),
+	})), [features, bounds]);
+	const visiblePoints = useMemo(() => {
+		const halfWidth = MAP_VIEW_WIDTH / (2 * displayView.zoom) * 1.3;
+		const halfHeight = MAP_VIEW_HEIGHT / (2 * displayView.zoom) * 1.3;
+		return candidatePoints.filter(({ center: [x, y] }) => Math.abs(x - displayView.x) <= halfWidth && Math.abs(y - displayView.y) <= halfHeight);
+	}, [candidatePoints, displayView.x, displayView.y, displayView.zoom]);
+	const regionalView = displayView.zoom < 3;
+	const detailOpacity = Math.max(0, Math.min(1, (displayView.zoom - 5) / 5));
+	const coverageOpacity = 1 - detailOpacity;
+	const maximumObservationDates = Math.max(1, ...tileProducts.map((tile) => tile.dates.length));
+	const drawPolygons = displayView.zoom >= 10 && visiblePoints.length <= 1400;
+	const translateX = MAP_VIEW_WIDTH / 2 - displayView.x * displayView.zoom;
+	const translateY = MAP_VIEW_HEIGHT / 2 - displayView.y * displayView.zoom;
+	const projectionScale = Math.min(MAP_VIEW_WIDTH / ((bounds.east - bounds.west) * Math.cos((bounds.north + bounds.south) * Math.PI / 360)), MAP_VIEW_HEIGHT / (bounds.north - bounds.south));
+	const scaleDistanceKm = 48 * 111.32 / (projectionScale * screenScale * displayView.zoom);
+	const scaleLabel = scaleDistanceKm < 1 ? `${Math.round(scaleDistanceKm * 1000 / 10) * 10} m` : `${scaleDistanceKm.toLocaleString('en', { maximumFractionDigits: 1 })} km`;
+
+	useEffect(() => { viewCallbackRef.current = onView; }, [onView]);
+
+	useEffect(() => {
+		const handleMove = (event: globalThis.PointerEvent) => {
+			const drag = dragRef.current;
+			const svg = svgRef.current;
+			if (!drag || !svg || event.pointerId !== drag.pointerId) return;
+			const matrix = svg.getScreenCTM();
+			if (!matrix) return;
+			const point = svg.createSVGPoint();
+			point.x = event.clientX;
+			point.y = event.clientY;
+			const current = point.matrixTransform(matrix.inverse());
+			if (!drag.moved && Math.hypot(current.x - drag.startX, current.y - drag.startY) < 3) return;
+			drag.moved = true;
+			setIsDragging(true);
+			const next = {
+				zoom: drag.startView.zoom,
+				x: drag.startView.x - (current.x - drag.startX) / drag.startView.zoom,
+				y: drag.startView.y - (current.y - drag.startY) / drag.startView.zoom,
+			};
+			displayViewRef.current = next;
+			setDisplayView(next);
+			viewCallbackRef.current(next);
+		};
+		const handleUp = (event: globalThis.PointerEvent) => {
+			if (dragRef.current?.pointerId !== event.pointerId) return;
+			dragRef.current = null;
+			setIsDragging(false);
+		};
+		window.addEventListener('pointermove', handleMove);
+		window.addEventListener('pointerup', handleUp);
+		window.addEventListener('pointercancel', handleUp);
+		return () => {
+			window.removeEventListener('pointermove', handleMove);
+			window.removeEventListener('pointerup', handleUp);
+			window.removeEventListener('pointercancel', handleUp);
+		};
+	}, []);
+
+	useEffect(() => {
+		if (dragRef.current?.moved) {
+			displayViewRef.current = view;
+			return;
+		}
+		let frame = 0;
+		let started = 0;
+		const from = displayViewRef.current;
+		if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+			displayViewRef.current = view;
+			frame = requestAnimationFrame(() => setDisplayView(view));
+			return () => cancelAnimationFrame(frame);
+		}
+		const animate = (now: number) => {
+			if (!started) started = now;
+			const raw = Math.min(1, (now - started) / 520);
+			const progress = 1 - (1 - raw) ** 3;
+			const next = {
+				zoom: from.zoom + (view.zoom - from.zoom) * progress,
+				x: from.x + (view.x - from.x) * progress,
+				y: from.y + (view.y - from.y) * progress,
+			};
+			displayViewRef.current = next;
+			setDisplayView(next);
+			if (raw < 1) frame = requestAnimationFrame(animate);
+		};
+		frame = requestAnimationFrame(animate);
+		return () => cancelAnimationFrame(frame);
+	}, [view]);
+
+	const pointAt = (event: PointerEvent<SVGSVGElement>) => {
+		const matrix = event.currentTarget.getScreenCTM();
+		if (!matrix) return null;
+		const point = event.currentTarget.createSVGPoint();
+		point.x = event.clientX;
+		point.y = event.clientY;
+		return point.matrixTransform(matrix.inverse());
+	};
+	const handlePointerDown = (event: PointerEvent<SVGSVGElement>) => {
+		if (event.button !== 0) return;
+		const point = pointAt(event);
+		if (!point) return;
+		dragRef.current = { pointerId: event.pointerId, startView: displayViewRef.current, startX: point.x, startY: point.y, moved: false };
+	};
+	const adjustZoom = (amount: number) => onView({ ...view, zoom: Math.max(0.6, Math.min(128, view.zoom + amount)) });
+	const handleWheel = (event: WheelEvent<SVGSVGElement>) => {
+		event.preventDefault();
+		adjustZoom(event.deltaY < 0 ? 0.3 : -0.3);
+	};
+	const handleDoubleClick = (event: ReactMouseEvent<SVGSVGElement>) => {
+		event.preventDefault();
+		adjustZoom(0.8);
+	};
+	const focusCluster = (cluster: { x: number; y: number; count: number }) => onView({
+		zoom: Math.min(128, Math.max(view.zoom + 1.2, cluster.count > 30 ? 2.8 : 3.4)), x: cluster.x, y: cluster.y,
+	});
+	const focusFeature = (feature: CandidateFeature) => {
+		const [x, y] = geometryCenter(feature.geometry, bounds, MAP_VIEW_WIDTH, MAP_VIEW_HEIGHT, projectMapCoordinate);
+		onView({ zoom: Math.max(view.zoom, 4.1), x, y });
+		onSelect(feature);
+	};
+	const temporalColor = (feature: CandidateFeature) => {
+		const temporal = temporalClassOf(feature.properties);
+		return temporal === 't4_validated_persistent' ? '#f4ce78' : temporal === 'persistent' ? '#f06a87' : temporal === 'seasonal_transient' ? '#64d4d2' : '#bbc5c0';
+	};
+	const footprintColor = (index: number) => ['#d1e4d8', '#6ad4d2', '#ff9c79', '#f4ce78'][index % 4];
+	const imageCorners: [number, number][] = [
+		[imageBounds.west, imageBounds.north], [imageBounds.east, imageBounds.north],
+		[imageBounds.east, imageBounds.south], [imageBounds.west, imageBounds.south],
+	];
+	const staticImageTile: AnalysisTile = {
+		tile_id: 'overview-image', crs: 'EPSG:4326', corners: imageCorners,
+		width: MAP_VIEW_WIDTH, height: MAP_VIEW_HEIGHT, dates: [], source_record_ids: [],
+		display_bounds: imageBounds,
+		analysis_valid_pixels: 0, satellite_coverage_pixels: 0, insufficient_evidence_pixels: 0, layers: {},
+	};
 
 	return (
-		<motion.div key={mode.id} initial={{ opacity: reduceMotion ? 1 : 0.5 }} animate={{ opacity: 1 }} transition={{ duration: 0.25 }} className='relative h-105 sm:h-145 rounded-md bg-radar overflow-hidden'>
-			<svg viewBox={viewBox} preserveAspectRatio='xMidYMid meet' className='absolute inset-0 h-full w-full' aria-hidden='true'>
+		<div className='ts-map-canvas'>
+			<svg ref={svgRef} data-testid='map-viewport' data-map-center={`${roundPixel(displayView.x)},${roundPixel(displayView.y)}`}
+				data-map-zoom={roundPixel(displayView.zoom)} data-map-level={regionalView ? 'regional' : detailOpacity > 0 ? 'investigation' : 'discovery'} className={`ts-map-svg ${isDragging ? 'is-dragging' : ''}`}
+				viewBox={`0 0 ${MAP_VIEW_WIDTH} ${MAP_VIEW_HEIGHT}`} preserveAspectRatio='xMidYMid meet' overflow='visible' role='application'
+				aria-label={`${contract.scene?.name ?? 'Area of interest'} anomaly distribution. ${features.length} candidates shown.`}
+				onWheel={handleWheel} onDoubleClick={handleDoubleClick} onPointerDown={handlePointerDown}>
 				<defs>
-					<filter id='sarBefore' x='0' y='0' width='100%' height='100%'>
-						<feTurbulence type='fractalNoise' baseFrequency='0.95' numOctaves={2} seed={4} />
-						<feColorMatrix type='matrix' values='0.75 0 0 0 0.08  0.75 0 0 0 0.08  0.75 0 0 0 0.08  0 0 0 0 1' />
-					</filter>
+					<linearGradient id='mapFade' x1='0' x2='1' y1='0' y2='1'><stop stopColor='#171d22' /><stop offset='1' stopColor='#222b31' /></linearGradient>
+					<filter id='softHalo' x='-100%' y='-100%' width='300%' height='300%'><feGaussianBlur stdDeviation='7' /></filter>
+					<clipPath id='sceneClip'><rect x='0' y='0' width={MAP_VIEW_WIDTH} height={MAP_VIEW_HEIGHT} rx='10' /></clipPath>
 				</defs>
-				<rect width='1000' height='600' filter='url(#sarBefore)' />
-				<path d='M-20 420 C 120 380, 200 470, 340 430 S 560 330, 700 380 S 900 470, 1020 430' fill='none' stroke='#0A0B0A' strokeWidth={22} />
-				<path d='M810 480 Q855 435 920 475 Q965 520 910 560 Q855 590 810 530 Z' fill='#0A0B0A' />
-				<path d='M80 -10 C 140 120, 300 160, 360 300 S 420 520, 470 620' fill='none' stroke='#9A9E9B' strokeWidth={3} />
+				<rect width={MAP_VIEW_WIDTH} height={MAP_VIEW_HEIGHT} fill='url(#mapFade)' />
+				<g><g transform={`translate(${translateX} ${translateY}) scale(${displayView.zoom})`}>
+					{contextFeatures.map((feature, index) => <path key={`context-${index}`} className={feature.properties.kind === 'land' ? 'ts-context-land' : 'ts-context-river'} d={geometryPath(feature.geometry, bounds, MAP_VIEW_WIDTH, MAP_VIEW_HEIGHT, projectMapCoordinate)} strokeWidth={(feature.properties.kind === 'land' ? 1 : .7) / displayView.zoom} pointerEvents='none' />)}
+					{contextFeatures.filter((feature) => feature.properties.kind === 'land' && Array.isArray(feature.properties.label)).map((feature, index) => { const [x, y] = projectMapCoordinate(feature.properties.label as number[], bounds, MAP_VIEW_WIDTH, MAP_VIEW_HEIGHT); return <text key={`label-${index}`} className='ts-context-label' x={x} y={y} textAnchor='middle' fontSize={13 / displayView.zoom} pointerEvents='none'>{String(feature.properties.name).toUpperCase()}</text>; })}
+					{showStreetDetail && basemapTiles.map((tile) => <g className='ts-basemap-tile' key={`${tile.z}/${tile.x}/${tile.y}`} data-basemap-tile={`${tile.z}/${tile.x}/${tile.y}`} transform={basemapTransform(tile.bounds, bounds)} pointerEvents='none'>
+						<image href={tile.src} x='0' y='0' width='256' height='256' preserveAspectRatio='none' pointerEvents='none' onLoad={(event) => event.currentTarget.setAttribute('data-loaded', 'true')} />
+					</g>)}
+					{coverageOpacity > 0 && <g className='ts-coverage-surface' opacity={coverageOpacity} pointerEvents='none'>{tileProducts.map((tile) => {
+						const geometry = { type: 'Polygon', coordinates: [[...tile.corners, tile.corners[0]]] };
+						return <path key={tile.tile_id} className={`ts-coverage-footprint ${tile.analysis_valid_pixels ? 'is-analyzed' : 'is-sparse'}`} d={geometryPath(geometry, bounds, MAP_VIEW_WIDTH, MAP_VIEW_HEIGHT, projectMapCoordinate)} fillOpacity={.1 + .2 * Math.min(1, tile.dates.length / maximumObservationDates)} strokeWidth={.8 / displayView.zoom}><title>{tile.tile_id} · {tile.dates.length} observation dates · {tile.source_record_ids.length} source acquisitions</title></path>;
+					})}</g>}
+					{detailOpacity > 0 && <g className='ts-sar-detail' opacity={detailOpacity}>
+					{imagePath && <g className='ts-overview-layer' transform={tileTransform(staticImageTile, bounds)}>{imageLayout ? <svg width={MAP_VIEW_WIDTH} height={MAP_VIEW_HEIGHT} viewBox={`${imageLayout.x} ${imageLayout.y} ${imageLayout.content_width} ${imageLayout.content_height}`} preserveAspectRatio='none' overflow='hidden'><image href={imagePath} width={imageLayout.width} height={imageLayout.height} /></svg> : <image href={imagePath} x='0' y='0' width={MAP_VIEW_WIDTH} height={MAP_VIEW_HEIGHT} preserveAspectRatio='none' />}</g>}
+					{tileProducts.map((tile) => {
+						const asset = assetUrl(tile.layers[layer]);
+						if (!asset) return null;
+						return <g className='ts-map-tile' key={tile.tile_id} data-tile-id={tile.tile_id} data-geographic-corners={JSON.stringify(tile.corners)} data-display-bounds={JSON.stringify(tile.display_bounds)} transform={tileTransform(tile, bounds)}>
+							<image href={asset} x='0' y='0' width={tile.preview_width ?? tile.width} height={tile.preview_height ?? tile.height} preserveAspectRatio='none' />
+						</g>;
+					})}
+					</g>}
+					{showFootprints && (contract.acquisitions ?? []).map((acquisition, index) => {
+						const path = geometryPath(acquisition.footprint, bounds, MAP_VIEW_WIDTH, MAP_VIEW_HEIGHT, projectMapCoordinate);
+						return path ? <path key={acquisition.id} d={path} fill='none' stroke={footprintColor(index)} strokeWidth={2 / displayView.zoom} strokeDasharray={`${7 / displayView.zoom} ${4 / displayView.zoom}`} opacity={regionalView ? .3 : .8} pointerEvents='none' /> : null;
+					})}
+					{(regionalView || aggregateDetections) && displayView.zoom < 5 ? clusters.map((cluster, index) => {
+						const color = cluster.validatedCount ? '#f4ce78' : cluster.persistentCount ? '#f06a87' : '#64d4d2';
+						const radius = (11 + Math.min(10, Math.log2(cluster.count + 1) * 3)) / displayView.zoom;
+						return <g key={`${Math.round(cluster.x)}-${Math.round(cluster.y)}-${index}`} role='button' tabIndex={0}
+							aria-label={`Zoom to cluster of ${cluster.count} anomalies`} className='ts-cluster-marker'
+							data-candidate-ids={JSON.stringify(cluster.features.map((feature) => String(feature.properties.id)))}
+							onClick={() => focusCluster(cluster)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') focusCluster(cluster); }}>
+							<title>{`${cluster.count} detections · ${cluster.persistentCount} persistent · ${cluster.validatedCount} independently supported`}</title>
+							<circle cx={cluster.x} cy={cluster.y} r={radius * 1.4} fill='none' stroke={color} strokeOpacity='.18' strokeWidth={1 / displayView.zoom} />
+							<circle cx={cluster.x} cy={cluster.y} r={radius} fill='#202830' fillOpacity='.95' stroke={color} strokeOpacity='.8' strokeWidth={1.4 / displayView.zoom} />
+							<text x={cluster.x} y={cluster.y + 4 / displayView.zoom} textAnchor='middle' fontSize={Math.min(radius * 1.1, 14 / displayView.zoom)} fill={color} fontWeight='600'>{cluster.count}</text>
+						</g>;
+					}) : drawPolygons ? visiblePoints.map(({ feature }) => {
+						const d = geometryPath(feature.geometry, bounds, MAP_VIEW_WIDTH, MAP_VIEW_HEIGHT, projectMapCoordinate);
+						const isSelected = String(feature.properties.id) === String(selectedId);
+						const color = temporalColor(feature);
+						return <path key={String(feature.properties.id)} d={d} fill={color} fillOpacity={isSelected ? .25 : selected ? .04 : .12}
+							stroke={isSelected ? '#f4d17f' : color} strokeWidth={(isSelected ? 3.2 : 1.15) / displayView.zoom} strokeLinejoin='round'
+							className={`ts-candidate-shape ${isSelected ? 'is-selected' : ''}`} data-candidate-id={String(feature.properties.id)} role='button' tabIndex={0} aria-label={`Select region ${feature.properties.id}`}
+							onClick={() => focusFeature(feature)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') focusFeature(feature); }} />;
+					}) : visiblePoints.map(({ feature, center: [x, y] }) => {
+						const isSelected = String(feature.properties.id) === String(selectedId);
+						return <circle key={String(feature.properties.id)} cx={x} cy={y} r={(isSelected ? 5 : 3) / displayView.zoom}
+							fill={isSelected ? '#f4d17f' : temporalColor(feature)} fillOpacity={isSelected ? 1 : 0.82}
+							stroke='#111a16' strokeWidth={0.7 / displayView.zoom} className='ts-candidate-point' data-candidate-id={String(feature.properties.id)}
+							role='button' tabIndex={0} aria-label={`Select region ${feature.properties.id}`}
+							onClick={() => focusFeature(feature)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') focusFeature(feature); }} />;
+					})}
+					{selected && (regionalView || aggregateDetections) && displayView.zoom < 5 && (() => {
+						const d = geometryPath(selected.geometry, bounds, MAP_VIEW_WIDTH, MAP_VIEW_HEIGHT, projectMapCoordinate);
+						return <path d={d} fill='#f4d17f' fillOpacity='.55' stroke='#fff2ca' strokeWidth={3 / displayView.zoom} pointerEvents='none' />;
+					})()}
+				</g></g>
 			</svg>
-
-			<div className='absolute inset-0' style={{ clipPath: `inset(0 0 0 ${swipePosition}%)` }}>
-				<svg viewBox={viewBox} preserveAspectRatio='xMidYMid meet' className='absolute inset-0 h-full w-full' aria-hidden='true'>
-					<defs>
-						<filter id='sarAfter' x='0' y='0' width='100%' height='100%'>
-							<feTurbulence type='fractalNoise' baseFrequency='0.95' numOctaves={2} seed={4} />
-							<feColorMatrix type='matrix' values='0.75 0 0 0 0.08  0.75 0 0 0 0.08  0.75 0 0 0 0.08  0 0 0 0 1' />
-						</filter>
-						<filter id='sarCleared' x='0' y='0' width='100%' height='100%'>
-							<feTurbulence type='fractalNoise' baseFrequency='1.3' numOctaves={1} seed={9} />
-							<feColorMatrix type='matrix' values='0.16 0 0 0 0.02  0.16 0 0 0 0.02  0.16 0 0 0 0.02  0 0 0 0 1' />
-						</filter>
-						<clipPath id='clearedShapes'>
-							{clearings.map((item) => <path key={item.id} d={item.path} fillRule='evenodd' clipRule='evenodd' />)}
-						</clipPath>
-					</defs>
-					<rect width='1000' height='600' filter='url(#sarAfter)' />
-					{mode.id !== 'water' && <rect width='1000' height='600' filter='url(#sarCleared)' clipPath='url(#clearedShapes)' />}
-					<path d='M-20 420 C 120 380, 200 470, 340 430 S 560 330, 700 380 S 900 470, 1020 430' fill='none' stroke='#0A0B0A' strokeWidth={mode.id === 'water' ? 42 : 22} />
-					<path d={mode.id === 'water' ? 'M832 489 Q861 462 899 487 Q928 517 896 542 Q855 558 832 521 Z' : 'M810 480 Q855 435 920 475 Q965 520 910 560 Q855 590 810 530 Z'} fill='#0A0B0A' />
-					<path d='M80 -10 C 140 120, 300 160, 360 300 S 420 520, 470 620' fill='none' stroke='#9A9E9B' strokeWidth={3} />
-					<path d='M360 300 C 450 260, 520 220, 600 200' fill='none' stroke='#9A9E9B' strokeWidth={3} />
-					<g stroke='#E14C8C' strokeLinejoin='round' style={{ opacity: showClearings ? 1 : 0 }}>
-						{clearings.map((clearing) => (
-							<path key={clearing.id} d={clearing.path} fill={clearing.direction === 'loss' ? '#a9692a' : mode.color} fillOpacity={selected.id === clearing.id ? 0.55 : 0.28} fillRule='evenodd' stroke={clearing.direction === 'loss' ? '#a9692a' : mode.color} strokeWidth={selected.id === clearing.id ? 4 : 2} strokeLinejoin='round' />
-						))}
-					</g>
-				</svg>
+			<button type='button' className='ts-detection-mode' aria-pressed={aggregateDetections} disabled={regionalView || displayView.zoom >= 5} onClick={() => setAggregateDetections((current) => !current)}>{drawPolygons ? 'Candidate geometry' : displayView.zoom >= 5 ? 'Individual detections' : regionalView || aggregateDetections ? 'Clustered detections' : 'Individual detections'}<span>{displayView.zoom >= 5 ? 'Select a signal to inspect evidence' : regionalView ? 'Zoom to resolve individual signals' : aggregateDetections ? 'Show individual points' : 'Group nearby points'}</span></button>
+			<div className='ts-zoom-control' aria-label='Map zoom controls'>
+				<button type='button' aria-label='Zoom in' onClick={() => adjustZoom(0.45)}><Plus size={16} /></button>
+				<span>{displayView.zoom.toFixed(1)}×</span>
+				<button type='button' aria-label='Zoom out' onClick={() => adjustZoom(-0.45)}><Minus size={16} /></button>
 			</div>
-
-			<svg viewBox={viewBox} preserveAspectRatio='xMidYMid meet' className='pointer-events-none absolute inset-0 h-full w-full' aria-hidden='true' style={{ opacity: showBoundary ? 1 : 0 }}>
-				<path d='M250 0V600M500 0V600M750 0V600M0 200H1000M0 400H1000' stroke='rgba(255,255,255,0.16)' strokeWidth={1} />
-				<g fill='none' strokeLinejoin='round'>
-					<path d='M470 90 L760 40 L880 180 L820 330 L560 360 L440 240 Z' stroke='#F6F7F3' strokeWidth={6} />
-					<path d='M470 90 L760 40 L880 180 L820 330 L560 360 L440 240 Z' stroke='#163F52' strokeWidth={3} strokeDasharray='12 6' />
-				</g>
-			</svg>
-
-			<div className='pointer-events-none absolute inset-y-0 -ml-px w-0.5 bg-panel' style={{ left: `${swipePosition}%` }}>
-				<div className='absolute left-1/2 top-1/2 flex h-10 w-10 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-panel shadow-[0_1px_4px_rgba(0,0,0,0.35)]'>
-					<svg width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='#1C2620' strokeWidth={2} strokeLinecap='round' strokeLinejoin='round' aria-hidden='true'>
-						<path d='M9 6l-6 6 6 6M15 6l6 6-6 6' />
-					</svg>
-				</div>
-			</div>
-
-			<span className='absolute left-3.5 top-3.5 px-2.5 py-1.5 leading-none [text-box:trim-both_cap_alphabetic] rounded-[3px] bg-panel font-cond font-semibold text-base'>Before</span>
-			<span className='absolute right-17.5 top-3.5 px-2.5 py-1.5 leading-none [text-box:trim-both_cap_alphabetic] rounded-[3px] bg-panel font-cond font-semibold text-base'>After</span>
-
-			<div className='absolute right-3 top-3 flex flex-col rounded bg-panel overflow-hidden'>
-				<button
-					//
-					type='button'
-					onClick={() => setZoom((value) => Math.min(3, value + 0.5))} disabled={zoom >= 3}
-					className='size-11 inline-flex items-center justify-center gap-2 hover:bg-selected disabled:opacity-40'
-					aria-label='Zoom in'>
-					<Plus className='size-4.5 shrink-0' />
-				</button>
-
-				<button
-					//
-					type='button'
-					onClick={() => setZoom((value) => Math.max(1, value - 0.5))} disabled={zoom <= 1}
-					className='size-11 inline-flex items-center justify-center gap-2 hover:bg-selected disabled:opacity-40'
-					aria-label='Zoom out'>
-					<Minus className='size-4.5 shrink-0' />
-				</button>
-			</div>
-
-			<div className='absolute bottom-3.5 left-3.5 flex max-w-[calc(100%-150px)] flex-wrap items-center gap-x-[18px] gap-y-1.5 rounded bg-panel px-3.5 py-2 text-sm'>
-				<label className='flex min-h-[36px] cursor-pointer items-center gap-2'>
-					<input type='checkbox' checked={showClearings} onChange={() => onShowClearingsChange(!showClearings)} className='h-[18px] w-[18px]' />
-					<span className='h-3.5 w-3.5 rounded-sm border-2' style={{ borderColor: mode.color, backgroundColor: `${mode.color}55` }}></span>
-					{mode.overlay}
-				</label>
-
-				<label className='flex min-h-[36px] cursor-pointer items-center gap-2'>
-					<input type='checkbox' checked={showBoundary} onChange={() => onShowBoundaryChange(!showBoundary)} className='h-[18px] w-[18px]' />
-					<span className='w-[18px] border-t-[3px] border-dashed border-boundary'></span>
-					Reserve boundary
-				</label>
-
-				{mode.id === 'water' && <span className='text-xs'>Blue: gain · Brown: loss</span>}
-				{mode.id === 'deforestation' && <label className='flex min-h-[36px] items-center gap-2.5'>
-					Radar threshold (demo)
-					<input type='range' min='1' max='6' step='0.5' value={sensitivity} onChange={(event) => onSensitivityChange(Number(event.target.value))} className='w-[110px]' />
-					<span className='min-w-[44px]'>{sensitivity} dB</span>
-				</label>}
-			</div>
-
-			<div className='absolute bottom-3.5 right-3.5 px-2.5 py-1.5 flex flex-col gap-0.75 rounded bg-panel text-[13px]'>
-				<div className='h-1.5 w-22.5 border-2 border-t-0 border-ink'></div>
-				Demo · No scale
-			</div>
-		</motion.div>
+			<button type='button' className='ts-basemap-mode' aria-pressed={showStreetDetail} onClick={() => setShowStreetDetail((current) => !current)}>Street detail <span>{showStreetDetail ? 'On' : 'Off'}</span></button>
+			{coverageOpacity > 0 && <div className='ts-coverage-key' style={{ opacity: coverageOpacity }}><span />Tile coverage · brightness reflects observation dates</div>}
+			<div className='ts-map-scale'><span />{scaleLabel} <small>approx.</small></div>
+			<div className='ts-map-coordinate'>WGS 84 · {bounds.west.toFixed(2)}°E — {bounds.east.toFixed(2)}°E</div>
+		</div>
 	);
 };
 

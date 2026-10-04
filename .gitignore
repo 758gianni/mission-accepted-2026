@@ -20,3 +20,9 @@ Thumbs.db
 # JavaScript dependencies and build output
 node_modules/
 dist/
+
+# Reproducible TerraSignal outputs and Python runtime
+/results/
+__pycache__/
+.pytest_cache/
+.venv/

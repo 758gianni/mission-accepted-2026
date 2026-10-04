@@ -1,0 +1,9 @@
+numpy==2.5.3
+rasterio==1.5.2
+scipy==1.18.1
+shapely==2.1.2
+pyproj==3.8.0
+pillow==12.3.0
+pytest==9.1.1
+py-eodms-rapi @ git+https://github.com/eodms-sgdot/py-eodms-rapi.git@22aa6348a120da98c1122057a245a1ba3100b759
+# Optional measured GPU backend: pip install "cupy-cuda12x[ctk]==14.2.0"

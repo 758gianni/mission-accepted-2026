@@ -26,7 +26,7 @@ const Root = () => {
 	const [filter, setFilter] = useState<CandidateFilter>('all');
 	const [selectedId, setSelectedId] = useState<string | number | null>(null);
 	const [layer, setLayer] = useState<MapLayer>('temporal_rgb');
-	const [showFootprints, setShowFootprints] = useState(false);
+	const [showFootprints, setShowFootprints] = useState(true);
 	const [view, setView] = useState(overviewView);
 	const [presentationIndex, setPresentationIndex] = useState<number | null>(null);
 

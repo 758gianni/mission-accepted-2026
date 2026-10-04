@@ -142,3 +142,23 @@
 
 .ts-overview-block > div { min-width: 0; }
 .ts-tile-overview strong { white-space: normal; font-size: 16px; line-height: 1.45; }
+
+/* Scale hierarchy: broad coverage first, source imagery during investigation. */
+.ts-coverage-footprint { fill: #719caa; stroke: #8cabb5; stroke-opacity: .28; }
+.ts-coverage-footprint.is-sparse { fill: #64717b; stroke-opacity: .12; }
+.ts-detection-mode:disabled { cursor: default; opacity: .75; }
+.ts-sar-detail { transition: opacity .18s linear; }
+.ts-candidate-shape.is-selected { filter: drop-shadow(0 0 2px rgba(227,189,119,.25)); }
+.ts-overview-bar { min-height: 66px; padding-top: 10px; padding-bottom: 10px; background: rgba(255,255,255,.018); }
+.ts-overview-block strong { font-size: 16px; color: #c1c8cf; }
+.ts-overview-block > svg { width: 14px; opacity: .55; }
+.ts-storage-flow strong { font-size: 18px; }
+.ts-storage-label,.ts-overview-block span { font-size: 9px; color: #848e97; }
+.ts-queue-panel { box-shadow: 0 8px 32px rgba(0,0,0,.12); }
+.ts-queue-item:first-child { background: rgba(227,189,119,.035); border-radius: 8px; padding: 14px 8px; margin-bottom: 7px; }
+.ts-queue-item:first-child .ts-queue-title { font-size: 15px; }
+.ts-queue-item:hover .ts-queue-chevron { color: var(--gold); transform: translateX(2px); }
+.ts-coverage-key { position:absolute; bottom:76px; left:16px; display:flex; align-items:center; gap:8px; color:#a5b2bc; font-size:10px; pointer-events:none; }
+.ts-coverage-key span { width:28px; height:7px; background:linear-gradient(90deg,#719caa33,#719caa88); border-radius:2px; }
+@media (prefers-reduced-motion:no-preference) { .ts-map-evidence { animation:ts-evidence-arrive .3s ease .35s both; } }
+@keyframes ts-evidence-arrive { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:translateY(0); } }

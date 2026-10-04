@@ -76,12 +76,13 @@ test('renders every georeferenced processing tile and uses configured AOI metada
 	await expect(metrics.getByText(`${Math.round(contract.tile_processing.satellite_coverage_area_km2).toLocaleString()} km²`)).toBeVisible();
 	await expect(metrics.getByText('Not recorded')).toBeVisible();
 	const tiles = page.locator('.ts-map-tile');
-	await expect(tiles).toHaveCount(contract.tiles.length);
-	const mappedIds = await page.locator('.ts-candidate-point').evaluateAll((items) => items.map((item) => item.getAttribute('data-candidate-id')));
+	await expect(tiles).toHaveCount(0);
+	await expect(page.locator('.ts-coverage-footprint')).toHaveCount(contract.tiles.length);
+	const mappedIds = await page.locator('.ts-cluster-marker').evaluateAll((items) => items.flatMap((item) => JSON.parse(item.getAttribute('data-candidate-ids') ?? '[]')));
 	expect(mappedIds.length).toBe(candidateData.features.length);
 	await expect(page.locator('.ts-context-land').first()).toBeAttached();
 	await expect(page.getByText('© OpenStreetMap contributors', { exact: false })).toBeVisible();
-	const mapCount = async () => page.locator('.ts-candidate-point').count();
+	const mapCount = async () => page.locator('.ts-cluster-marker').evaluateAll((items) => items.reduce((count, item) => count + JSON.parse(item.getAttribute('data-candidate-ids') ?? '[]').length, 0));
 	const filters = page.getByRole('navigation', { name: 'Filter anomaly classes' });
 	await filters.getByRole('button', { name: /^Seasonal/ }).click();
 	await expect.poll(mapCount).toBe(440);
@@ -91,6 +92,8 @@ test('renders every georeferenced processing tile and uses configured AOI metada
 	await expect.poll(mapCount).toBe(11);
 	await filters.getByRole('button', { name: /^All signals/ }).click();
 	await expect.poll(mapCount).toBe(525);
+	await page.locator('.ts-queue-item').first().click();
+	await expect(tiles).toHaveCount(contract.tiles.length);
 	const ids = await tiles.evaluateAll((items) => items.map((item) => item.getAttribute('data-tile-id')));
 	expect(new Set(ids).size).toBe(contract.tiles.length);
 	const placement = await tiles.evaluateAll((items) => items.map((item) => ({
@@ -129,7 +132,9 @@ test('renders every georeferenced processing tile and uses configured AOI metada
 	await page.getByRole('button', { name: 'Observation coverage' }).click();
 	await expect.poll(() => page.locator('.ts-map-tile image').first().getAttribute('href'))
 		.toMatch(/-coverage\.png$/);
+	await page.getByRole('button', { name: 'Back to queue' }).click();
 	await expect.poll(mapCount).toBe(525);
+	await expect(tiles).toHaveCount(0);
 });
 
 for (const viewport of [{ width: 1440, height: 900 }, { width: 1920, height: 1080 }, { width: 2560, height: 1440 }]) {
@@ -156,7 +161,7 @@ test('loads the overview without browser console or page errors', async ({ page 
 	await page.goto('/');
 	await expect(page.getByRole('heading', { name: 'TerraSignal', exact: true })).toBeVisible();
 	await expect(page.getByTestId('map-viewport')).toBeVisible();
-	await expect.poll(() => page.locator('.ts-map-tile').count()).toBeGreaterThan(1);
+	await expect.poll(() => page.locator('.ts-coverage-footprint').count()).toBeGreaterThan(1);
 	await page.waitForTimeout(250);
 	expect(errors).toEqual([]);
 });
@@ -164,18 +169,19 @@ test('loads the overview without browser console or page errors', async ({ page 
 test('judge flow preserves detections through clustering and opens the investigation hypothesis', async ({ page }) => {
 	await page.goto('/');
 	await expect(page.getByRole('region', { name: 'Candidate reduction funnel' })).toBeInViewport();
-	await expect(page.locator('.ts-candidate-point')).toHaveCount(525);
-	await page.getByRole('button', { name: /Individual detections/ }).click();
+	await expect(page.locator('.ts-sar-detail')).toHaveCount(0);
+	await expect(page.getByRole('button', { name: /Clustered detections/ })).toBeDisabled();
 	const ids = await page.locator('.ts-cluster-marker').evaluateAll((items) => items.flatMap((item) => JSON.parse(item.getAttribute('data-candidate-ids') ?? '[]')));
 	expect(new Set(ids).size).toBe(525);
-	await page.getByRole('button', { name: /Clustered detections/ }).click();
-	await expect(page.locator('.ts-candidate-point')).toHaveCount(525);
+	await expect(page.locator('.ts-candidate-point')).toHaveCount(0);
 	await page.getByRole('button', { name: /Guided walkthrough/ }).click();
 	await page.getByRole('button', { name: 'Go to Independently supported', exact: true }).click();
-	await expect(page.locator('.ts-candidate-point')).toHaveCount(11);
+	await expect.poll(() => page.locator('.ts-cluster-marker').evaluateAll((items) => items.reduce((count, item) => count + JSON.parse(item.getAttribute('data-candidate-ids') ?? '[]').length, 0))).toBe(11);
 	await page.getByRole('button', { name: 'Go to Investigate', exact: true }).click();
 	const investigation = page.getByLabel(/^Investigation for region/);
 	await expect(investigation).toBeVisible();
+	await expect(page.locator('.ts-sar-detail')).toHaveAttribute('opacity', '1');
+	await expect(page.locator('.ts-candidate-shape.is-selected')).toHaveCount(1);
 	await expect(investigation.getByText('Possible new water body', { exact: true })).toBeVisible();
 	await expect(investigation.getByText('INVESTIGATION HYPOTHESIS · UNVERIFIED', { exact: true })).toBeVisible();
 	const contract = await (await page.request.get('/data/derived/contract.json')).json();

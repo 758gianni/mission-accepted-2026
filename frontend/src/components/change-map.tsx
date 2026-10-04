@@ -64,14 +64,14 @@ const ChangeMap: FC<ChangeMapProps> = ({ contract, features, selectedId, layer, 
 		fetch(`/data/${contract.geographic_context.asset}`).then((response) => response.json()).then((data) => { if (active) setContextFeatures(data.features); }).catch(() => {});
 		return () => { active = false; };
 	}, [contract.geographic_context?.asset]);
-	const [aggregateDetections, setAggregateDetections] = useState(features.length > 2000);
+	const [aggregateDetections, setAggregateDetections] = useState(true);
 	const selected = features.find((feature) => String(feature.properties.id) === String(selectedId));
 	const tileProducts = contract.tiles ?? [];
 	const basemapTiles = useMemo(() => getBasemapTiles(bounds, displayView, MAP_VIEW_WIDTH, MAP_VIEW_HEIGHT),
 		[bounds, displayView]);
 	const imagePath = assetUrl(contract.imagery?.[layer]);
 	const imageLayout = contract.imagery_layout?.[layer];
-	const clusters = useMemo(() => clusterCandidates(features, bounds, MAP_VIEW_WIDTH, MAP_VIEW_HEIGHT, 72 / Math.max(view.zoom, 0.5), projectMapCoordinate),
+	const clusters = useMemo(() => clusterCandidates(features, bounds, MAP_VIEW_WIDTH, MAP_VIEW_HEIGHT, 44 / Math.max(view.zoom, 0.5), projectMapCoordinate),
 		[features, bounds, view.zoom]);
 	const candidatePoints = useMemo(() => features.map((feature) => ({
 		feature,
@@ -82,7 +82,11 @@ const ChangeMap: FC<ChangeMapProps> = ({ contract, features, selectedId, layer, 
 		const halfHeight = MAP_VIEW_HEIGHT / (2 * displayView.zoom) * 1.3;
 		return candidatePoints.filter(({ center: [x, y] }) => Math.abs(x - displayView.x) <= halfWidth && Math.abs(y - displayView.y) <= halfHeight);
 	}, [candidatePoints, displayView.x, displayView.y, displayView.zoom]);
-	const drawPolygons = displayView.zoom >= 4 && visiblePoints.length <= 1400;
+	const regionalView = displayView.zoom < 3;
+	const detailOpacity = Math.max(0, Math.min(1, (displayView.zoom - 5) / 5));
+	const coverageOpacity = 1 - detailOpacity;
+	const maximumObservationDates = Math.max(1, ...tileProducts.map((tile) => tile.dates.length));
+	const drawPolygons = displayView.zoom >= 10 && visiblePoints.length <= 1400;
 	const translateX = MAP_VIEW_WIDTH / 2 - displayView.x * displayView.zoom;
 	const translateY = MAP_VIEW_HEIGHT / 2 - displayView.y * displayView.zoom;
 	const projectionScale = Math.min(MAP_VIEW_WIDTH / ((bounds.east - bounds.west) * Math.cos((bounds.north + bounds.south) * Math.PI / 360)), MAP_VIEW_HEIGHT / (bounds.north - bounds.south));
@@ -209,7 +213,7 @@ const ChangeMap: FC<ChangeMapProps> = ({ contract, features, selectedId, layer, 
 	return (
 		<div className='ts-map-canvas'>
 			<svg ref={svgRef} data-testid='map-viewport' data-map-center={`${roundPixel(displayView.x)},${roundPixel(displayView.y)}`}
-				data-map-zoom={roundPixel(displayView.zoom)} className={`ts-map-svg ${isDragging ? 'is-dragging' : ''}`}
+				data-map-zoom={roundPixel(displayView.zoom)} data-map-level={regionalView ? 'regional' : detailOpacity > 0 ? 'investigation' : 'discovery'} className={`ts-map-svg ${isDragging ? 'is-dragging' : ''}`}
 				viewBox={`0 0 ${MAP_VIEW_WIDTH} ${MAP_VIEW_HEIGHT}`} preserveAspectRatio='xMidYMid meet' overflow='visible' role='application'
 				aria-label={`${contract.scene?.name ?? 'Area of interest'} anomaly distribution. ${features.length} candidates shown.`}
 				onWheel={handleWheel} onDoubleClick={handleDoubleClick} onPointerDown={handlePointerDown}>
@@ -225,6 +229,11 @@ const ChangeMap: FC<ChangeMapProps> = ({ contract, features, selectedId, layer, 
 					{showStreetDetail && basemapTiles.map((tile) => <g className='ts-basemap-tile' key={`${tile.z}/${tile.x}/${tile.y}`} data-basemap-tile={`${tile.z}/${tile.x}/${tile.y}`} transform={basemapTransform(tile.bounds, bounds)} pointerEvents='none'>
 						<image href={tile.src} x='0' y='0' width='256' height='256' preserveAspectRatio='none' pointerEvents='none' onLoad={(event) => event.currentTarget.setAttribute('data-loaded', 'true')} />
 					</g>)}
+					{coverageOpacity > 0 && <g className='ts-coverage-surface' opacity={coverageOpacity} pointerEvents='none'>{tileProducts.map((tile) => {
+						const geometry = { type: 'Polygon', coordinates: [[...tile.corners, tile.corners[0]]] };
+						return <path key={tile.tile_id} className={`ts-coverage-footprint ${tile.analysis_valid_pixels ? 'is-analyzed' : 'is-sparse'}`} d={geometryPath(geometry, bounds, MAP_VIEW_WIDTH, MAP_VIEW_HEIGHT, projectMapCoordinate)} fillOpacity={.1 + .2 * Math.min(1, tile.dates.length / maximumObservationDates)} strokeWidth={.8 / displayView.zoom}><title>{tile.tile_id} · {tile.dates.length} observation dates · {tile.source_record_ids.length} source acquisitions</title></path>;
+					})}</g>}
+					{detailOpacity > 0 && <g className='ts-sar-detail' opacity={detailOpacity}>
 					{imagePath && <g className='ts-overview-layer' transform={tileTransform(staticImageTile, bounds)}>{imageLayout ? <svg width={MAP_VIEW_WIDTH} height={MAP_VIEW_HEIGHT} viewBox={`${imageLayout.x} ${imageLayout.y} ${imageLayout.content_width} ${imageLayout.content_height}`} preserveAspectRatio='none' overflow='hidden'><image href={imagePath} width={imageLayout.width} height={imageLayout.height} /></svg> : <image href={imagePath} x='0' y='0' width={MAP_VIEW_WIDTH} height={MAP_VIEW_HEIGHT} preserveAspectRatio='none' />}</g>}
 					{tileProducts.map((tile) => {
 						const asset = assetUrl(tile.layers[layer]);
@@ -233,28 +242,30 @@ const ChangeMap: FC<ChangeMapProps> = ({ contract, features, selectedId, layer, 
 							<image href={asset} x='0' y='0' width={tile.preview_width ?? tile.width} height={tile.preview_height ?? tile.height} preserveAspectRatio='none' />
 						</g>;
 					})}
+					</g>}
 					{showFootprints && (contract.acquisitions ?? []).map((acquisition, index) => {
 						const path = geometryPath(acquisition.footprint, bounds, MAP_VIEW_WIDTH, MAP_VIEW_HEIGHT, projectMapCoordinate);
-						return path ? <path key={acquisition.id} d={path} fill='none' stroke={footprintColor(index)} strokeWidth={2 / displayView.zoom} strokeDasharray={`${7 / displayView.zoom} ${4 / displayView.zoom}`} opacity={0.8} pointerEvents='none' /> : null;
+						return path ? <path key={acquisition.id} d={path} fill='none' stroke={footprintColor(index)} strokeWidth={2 / displayView.zoom} strokeDasharray={`${7 / displayView.zoom} ${4 / displayView.zoom}`} opacity={regionalView ? .3 : .8} pointerEvents='none' /> : null;
 					})}
-					{aggregateDetections && displayView.zoom < 1.8 ? clusters.map((cluster, index) => {
+					{(regionalView || aggregateDetections) && displayView.zoom < 5 ? clusters.map((cluster, index) => {
 						const color = cluster.validatedCount ? '#f4ce78' : cluster.persistentCount ? '#f06a87' : '#64d4d2';
 						const radius = (11 + Math.min(10, Math.log2(cluster.count + 1) * 3)) / displayView.zoom;
 						return <g key={`${Math.round(cluster.x)}-${Math.round(cluster.y)}-${index}`} role='button' tabIndex={0}
 							aria-label={`Zoom to cluster of ${cluster.count} anomalies`} className='ts-cluster-marker'
 							data-candidate-ids={JSON.stringify(cluster.features.map((feature) => String(feature.properties.id)))}
 							onClick={() => focusCluster(cluster)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') focusCluster(cluster); }}>
-							<circle cx={cluster.x} cy={cluster.y} r={radius * 1.8} fill={color} opacity='.24' filter='url(#softHalo)' />
-							<circle cx={cluster.x} cy={cluster.y} r={radius} fill={color} fillOpacity='.87' stroke='#f1f5ee' strokeOpacity='.8' strokeWidth={1.4 / displayView.zoom} />
-							<text x={cluster.x} y={cluster.y + 4 / displayView.zoom} textAnchor='middle' fontSize={Math.min(radius * 1.1, 14 / displayView.zoom)} fill='#12201d' fontWeight='700'>{cluster.count}</text>
+							<title>{`${cluster.count} detections · ${cluster.persistentCount} persistent · ${cluster.validatedCount} independently supported`}</title>
+							<circle cx={cluster.x} cy={cluster.y} r={radius * 1.4} fill='none' stroke={color} strokeOpacity='.18' strokeWidth={1 / displayView.zoom} />
+							<circle cx={cluster.x} cy={cluster.y} r={radius} fill='#202830' fillOpacity='.95' stroke={color} strokeOpacity='.8' strokeWidth={1.4 / displayView.zoom} />
+							<text x={cluster.x} y={cluster.y + 4 / displayView.zoom} textAnchor='middle' fontSize={Math.min(radius * 1.1, 14 / displayView.zoom)} fill={color} fontWeight='600'>{cluster.count}</text>
 						</g>;
 					}) : drawPolygons ? visiblePoints.map(({ feature }) => {
 						const d = geometryPath(feature.geometry, bounds, MAP_VIEW_WIDTH, MAP_VIEW_HEIGHT, projectMapCoordinate);
 						const isSelected = String(feature.properties.id) === String(selectedId);
 						const color = temporalColor(feature);
-						return <path key={String(feature.properties.id)} d={d} fill={color} fillOpacity={isSelected ? 0.55 : 0.18}
+						return <path key={String(feature.properties.id)} d={d} fill={color} fillOpacity={isSelected ? .25 : selected ? .04 : .12}
 							stroke={isSelected ? '#f4d17f' : color} strokeWidth={(isSelected ? 3.2 : 1.15) / displayView.zoom} strokeLinejoin='round'
-							className='ts-candidate-shape' role='button' tabIndex={0} aria-label={`Select region ${feature.properties.id}`}
+							className={`ts-candidate-shape ${isSelected ? 'is-selected' : ''}`} data-candidate-id={String(feature.properties.id)} role='button' tabIndex={0} aria-label={`Select region ${feature.properties.id}`}
 							onClick={() => focusFeature(feature)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') focusFeature(feature); }} />;
 					}) : visiblePoints.map(({ feature, center: [x, y] }) => {
 						const isSelected = String(feature.properties.id) === String(selectedId);
@@ -264,19 +275,20 @@ const ChangeMap: FC<ChangeMapProps> = ({ contract, features, selectedId, layer, 
 							role='button' tabIndex={0} aria-label={`Select region ${feature.properties.id}`}
 							onClick={() => focusFeature(feature)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') focusFeature(feature); }} />;
 					})}
-					{selected && aggregateDetections && displayView.zoom < 1.8 && (() => {
+					{selected && (regionalView || aggregateDetections) && displayView.zoom < 5 && (() => {
 						const d = geometryPath(selected.geometry, bounds, MAP_VIEW_WIDTH, MAP_VIEW_HEIGHT, projectMapCoordinate);
 						return <path d={d} fill='#f4d17f' fillOpacity='.55' stroke='#fff2ca' strokeWidth={3 / displayView.zoom} pointerEvents='none' />;
 					})()}
 				</g></g>
 			</svg>
-			<button type='button' className='ts-detection-mode' aria-pressed={aggregateDetections} onClick={() => setAggregateDetections((current) => !current)}>{aggregateDetections ? 'Clustered detections' : 'Individual detections'}<span>{aggregateDetections ? 'Show individual points' : 'Group nearby points'}</span></button>
+			<button type='button' className='ts-detection-mode' aria-pressed={aggregateDetections} disabled={regionalView || displayView.zoom >= 5} onClick={() => setAggregateDetections((current) => !current)}>{drawPolygons ? 'Candidate geometry' : displayView.zoom >= 5 ? 'Individual detections' : regionalView || aggregateDetections ? 'Clustered detections' : 'Individual detections'}<span>{displayView.zoom >= 5 ? 'Select a signal to inspect evidence' : regionalView ? 'Zoom to resolve individual signals' : aggregateDetections ? 'Show individual points' : 'Group nearby points'}</span></button>
 			<div className='ts-zoom-control' aria-label='Map zoom controls'>
 				<button type='button' aria-label='Zoom in' onClick={() => adjustZoom(0.45)}><Plus size={16} /></button>
 				<span>{displayView.zoom.toFixed(1)}×</span>
 				<button type='button' aria-label='Zoom out' onClick={() => adjustZoom(-0.45)}><Minus size={16} /></button>
 			</div>
 			<button type='button' className='ts-basemap-mode' aria-pressed={showStreetDetail} onClick={() => setShowStreetDetail((current) => !current)}>Street detail <span>{showStreetDetail ? 'On' : 'Off'}</span></button>
+			{coverageOpacity > 0 && <div className='ts-coverage-key' style={{ opacity: coverageOpacity }}><span />Tile coverage · brightness reflects observation dates</div>}
 			<div className='ts-map-scale'><span />{scaleLabel} <small>approx.</small></div>
 			<div className='ts-map-coordinate'>WGS 84 · {bounds.west.toFixed(2)}°E — {bounds.east.toFixed(2)}°E</div>
 		</div>

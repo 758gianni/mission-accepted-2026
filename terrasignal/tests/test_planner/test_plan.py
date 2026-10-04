@@ -44,3 +44,17 @@ def test_sensor_specific_stacks_and_limit_is_not_coverage_claim():
     assert result["catalogue_truncated"] is True
     assert len(result["groups"]) == 1  # Only RS2 supplies primary candidate-generation stacks.
     assert all(d["plan_decision"] == "reject" for d in result["decisions"] if d["sensor"] == "Sentinel-1")
+
+
+def test_group_summary_counts_unique_utc_days_not_frames():
+    records=[obs('a','2024-01-01'),obs('b','2024-06-01'),obs('c','2024-12-01T06:00Z'),obs('d','2024-12-01T18:00Z')]
+    result=plan_acquisitions(records,records[0].footprint,budget=4)
+    assert result['groups'][0]['unique_dates']==3
+    assert result['groups'][0]['t4_window_score']==0
+
+
+def test_repeat_coverage_labels_follow_requested_depth():
+    records=[obs(str(i),f'2024-0{i+1}-01') for i in range(5)]
+    result=plan_acquisitions(records,records[0].footprint,budget=5,min_dates=5)
+    assert result['coverage']['selected_repeat_area_km2']>0
+    assert 'selected_three_date_area_km2' not in result['coverage']

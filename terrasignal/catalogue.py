@@ -37,6 +37,8 @@ class Catalogue:
             if row and (row[:3]!=(sensor,record_id,size) or (row[3] and sha256 and row[3]!=sha256)):
                 raise ValueError('Immutable raw reference changed; do not overwrite catalogue provenance')
             self.db.execute('INSERT OR IGNORE INTO raw_assets VALUES (?,?,?,?,?,?)',(sensor,record_id,str(path),size,1,sha256))
+            if sha256:
+                self.db.execute('UPDATE raw_assets SET sha256=? WHERE path=? AND sha256 IS NULL',(sha256,str(path)))
 
     def import_journals(self,raw_dir):
         imported=0

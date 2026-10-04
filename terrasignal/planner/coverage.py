@@ -71,7 +71,8 @@ def plan_acquisitions(observations, aoi_geometry, *, budget=12, local_ids=(),
     for key, members in groups.items():
         dates = defaultdict(set)
         for obs in members:
-            covered = {c for c, (point, _) in cells.items() if shape(obs.footprint).covers(point)}
+            geom=shape(obs.footprint)
+            covered = {c for c, (point, _) in cells.items() if geom.covers(point)}
             samples[(obs.sensor, obs.source_record_id)] = covered
             for cell in covered:
                 dates[cell].add(obs.timestamp.date())
@@ -117,8 +118,8 @@ def plan_acquisitions(observations, aoi_geometry, *, budget=12, local_ids=(),
 
     summaries, available_repeat, selected_repeat = [], [], []
     for key, members in groups.items():
-        timestamps = sorted({o.timestamp for o in members})
-        gaps = [(b-a).total_seconds()/86400 for a,b in zip(timestamps,timestamps[1:])]
+        timestamps = sorted({o.timestamp.date() for o in members})
+        gaps = [(b-a).days for a,b in zip(timestamps,timestamps[1:])]
         chosen_members = [o for k,o in selected if k == key]
         avail = repeated_footprint(members,aoi,min_dates)
         planned = repeated_footprint(chosen_members,aoi,min_dates)
@@ -135,7 +136,7 @@ def plan_acquisitions(observations, aoi_geometry, *, budget=12, local_ids=(),
     selected_geom = unary_union(selected_repeat)
     total_area = area_km2(aoi)
     new = [o for _,o in selected if o.source_record_id not in local_ids]
-    return {"schema_version": 1, "primary_source": "RADARSAT-2", "aoi": aoi_geometry,
+    result={"schema_version": 1, "primary_source": "RADARSAT-2", "aoi": aoi_geometry,
             "catalogue_truncated": truncated, "selection_budget_new_scenes": budget,
             "min_distinct_dates": min_dates, "observations": [o.to_dict() for o in records],
             "groups": summaries, "decisions": decisions,
@@ -143,8 +144,8 @@ def plan_acquisitions(observations, aoi_geometry, *, budget=12, local_ids=(),
                          "any_rs2_footprint_area_km2": area_km2(union_all),
                          "any_rs2_footprint_fraction": min(area_km2(union_all)/total_area,1.0),
                          "available_repeat_area_km2": area_km2(unary_union(available_repeat)),
-                         "selected_three_date_area_km2": area_km2(selected_geom),
-                         "selected_three_date_fraction": min(area_km2(selected_geom)/total_area,1.0),
+                         "selected_repeat_area_km2": area_km2(selected_geom),
+                         "selected_repeat_fraction": min(area_km2(selected_geom)/total_area,1.0),
                          "uncovered_aoi": mapping(aoi.difference(union_all)),
                          "selected_repeat_footprint": mapping(selected_geom),
                          "limitation": "Catalogue outlines only; geocoding, registration, and valid-pixel overlap remain processing gates",
@@ -152,6 +153,10 @@ def plan_acquisitions(observations, aoi_geometry, *, budget=12, local_ids=(),
             "storage": {"estimated_new_raw_bytes": sum(o.size_bytes or 0 for o in new),
                         "unknown_size_new_scenes": sum(o.size_bytes is None for o in new),
                         "reused_scenes": sum(o.source_record_id in local_ids for _,o in selected)}}
+    if min_dates==3:
+        result['coverage']['selected_three_date_area_km2']=result['coverage']['selected_repeat_area_km2']
+        result['coverage']['selected_three_date_fraction']=result['coverage']['selected_repeat_fraction']
+    return result
 
 
 def render_coverage_report(plan):
@@ -159,7 +164,7 @@ def render_coverage_report(plan):
     lines = ["# TerraSignal acquisition plan", "", "Primary signal: RADARSAT-2 Tropical Forests.",
              f"Catalogue truncated: {plan['catalogue_truncated']}.",
              f"AOI: {c['aoi_area_km2']:,.0f} km². Any RS2 footprint: {c['any_rs2_footprint_fraction']:.2%}.",
-             f"Selected three-date footprint: {c['selected_three_date_area_km2']:,.0f} km² ({c['selected_three_date_fraction']:.2%}).",
+             f"Selected {plan['min_distinct_dates']}-date footprint: {c['selected_repeat_area_km2']:,.0f} km² ({c['selected_repeat_fraction']:.2%}).",
              f"Estimated new raw: {s['estimated_new_raw_bytes']/1e9:.2f} GB; unknown-size scenes: {s['unknown_size_new_scenes']}.",
              "", "## Selection and provenance", "", "| Record | Sensor | Decision | Reason |", "|---|---|---|---|"]
     lines.extend(f"| {d['source_record_id']} | {d['sensor']} | {d['plan_decision']} | {d['plan_reason']} |" for d in plan["decisions"])

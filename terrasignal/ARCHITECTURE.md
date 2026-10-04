@@ -52,12 +52,21 @@ UTM zones have separate grids. Chunk dimensions are benchmarked at 512/1024/2048
 Within each grid, matching source/date fragments are mosaicked deterministically
 and counted as **one temporal observation**, not independent validation scenes.
 Missing data stays missing; timestamps and observation counts survive reduction.
+Day grouping and coverage summaries both use UTC calendar dates. Mosaic overlap
+uses highest available measured registration quality, then time/stable-ID fallback;
+overlap disagreement is reported and a compact per-pixel contribution bitmask
+distinguishes inspected inputs from actually contributing sources (including smoothing).
+Up to 32 fragments per dated tile are supported by the current provenance encoding.
 
 Keep raw and the minimal calibrated tile representation. Native/GCP intermediates
 and repeated presentation PNGs are regenerable; report their bytes separately,
 never delete the prototype outputs as part of this phase. Tiles and manifests are
 published atomically. A cache hit requires matching recipe/source signatures;
 file existence alone is insufficient.
+JSON stamps/manifests are replaced atomically. Torn cache metadata is a cache miss.
+New raw ingestion records SHA-256 in addition to the downloader's CRC confirmation.
+Failed records are isolated and remain retryable; missing new native products are
+regenerated from their verified central archive on resume.
 
 ## Planner
 
@@ -91,6 +100,10 @@ AOIs. A user-supplied WGS84 GeoJSON replaces this boundary for precise work.
   class, supporting observation count, terrain risk, priority and explicit
   validation evidence. Cross-tile candidates need boundary reconciliation before
   country-wide region counts are claimed.
+- Partial terrain coverage is not published as zero risk: the full-region risk is
+  null, known-subset risk and coverage are separate, and lower/upper risk bounds
+  disclose uncertainty. Ranking keeps these candidates with a disclosed heuristic
+  penalty (`0.5 + 0.5*known_fraction`), not a confidence estimate.
 - Country availability does not imply country processing completion. Report
   queried/selected/processed footprints and bytes separately.
 

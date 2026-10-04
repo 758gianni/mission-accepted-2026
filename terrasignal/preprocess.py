@@ -20,10 +20,16 @@ from .numerics import multilook
 def preprocess(archive_path, out, record_id, *, backend='cpu', factor=16):
     archive_path,out=Path(archive_path),Path(out)
     with ZipFile(archive_path) as archive:
-        product=next(n for n in archive.namelist() if n.endswith('/product.xml'))
+        products=[n for n in archive.namelist() if n.rsplit('/',1)[-1]=='product.xml']
+        if len(products)!=1:
+            raise ValueError('Expected exactly one RADARSAT product.xml')
+        product=products[0]
         product_bytes=archive.read(product)
         xml=ET.fromstring(product_bytes)
-        lut=next(e.text for e in xml.findall('.//{*}lookupTable') if e.get('incidenceAngleCorrection')=='Sigma Nought')
+        sigma_tables=[e.text for e in xml.findall('.//{*}lookupTable') if e.get('incidenceAngleCorrection')=='Sigma Nought']
+        if len(sigma_tables)!=1:
+            raise ValueError('Expected exactly one Sigma Nought calibration table')
+        lut=sigma_tables[0]
         lut_xml=ET.fromstring(archive.read(product.rsplit('/',1)[0]+'/'+lut))
         if float(lut_xml.find('.//{*}offset').text) != 0:
             raise ValueError('Nonzero calibration offset requires a separate verified adapter')

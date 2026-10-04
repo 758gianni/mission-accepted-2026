@@ -51,4 +51,5 @@ def normalize_record(record):
         size_bytes=round(size * 1024**2) if size is not None else None,
         orderable=orderable, quality_flags=tuple(flags), provenance={"collection": RS2_TROPICAL_COLLECTION,
             "title": value("title", "Title"), "catalogue_size_unit_assumption": "MiB (rounded estimate)",
+            "measurement_note": "sigma0_linear_power is the planned ARD representation; archived SLC measurement is complex amplitude",
             "resolution_note": "Catalogue resolution, not effective support after multilooking/resampling"})

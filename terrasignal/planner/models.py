@@ -5,6 +5,11 @@ from datetime import datetime, timezone
 RS2_TROPICAL_COLLECTION = "Radarsat-2_Tropical_Forest_Products"
 
 
+def timestamp_utc(value):
+    parsed=datetime.fromisoformat(value.replace("Z", "+00:00").replace(" +0000", "+00:00"))
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+
+
 @dataclass(frozen=True)
 class Observation:
     source_record_id: str
@@ -38,8 +43,7 @@ class Observation:
 
     @property
     def timestamp(self):
-        value = datetime.fromisoformat(self.acquisition_iso.replace("Z", "+00:00").replace(" +0000", "+00:00"))
-        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+        return timestamp_utc(self.acquisition_iso)
 
     @property
     def comparison_ready(self):

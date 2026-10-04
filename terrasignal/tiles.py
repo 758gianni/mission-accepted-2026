@@ -25,6 +25,8 @@ from shapely.ops import transform as transform_shape, unary_union
 
 from .numerics import to_db
 from .temporal import CLASS_NAMES, summarize
+from .planner.models import timestamp_utc
+from .storage import read_cache, write_json
 
 
 def file_hash(path):
@@ -56,7 +58,7 @@ def warp(source_path,transform,crs,size, *, offset=(0.,0.)):
         # Shift-to-apply is expressed in destination pixels (row, column).
         shifted=transform @ rasterio.Affine.translation(-offset[1],-offset[0])
         options={'gcps':gcps,'src_crs':gcp_crs,'MAX_GCP_ORDER':2} if gcps else {'src_transform':src.transform,'src_crs':src.crs}
-        reproject(src.read(1),result,**options,src_nodata=np.nan,dst_crs=crs,dst_transform=shifted,
+        reproject(src.read(1),result,**options,src_nodata=src.nodata if src.nodata is not None else np.nan,dst_crs=crs,dst_transform=shifted,
                   dst_nodata=np.nan,resampling=Resampling.bilinear,num_threads=2,warp_mem_limit=64)
     return result
 
@@ -118,8 +120,9 @@ def build(sources,aoi,out, *, crs='EPSG:32646',size=1024,resolution=60,dem_paths
             'heading':heading,'incidence':incidence,'min_area_ha':min_area_ha}
     signature=hashlib.sha256(json.dumps(recipe,sort_keys=True).encode()).hexdigest()
     by_date=defaultdict(list)
-    for s in sorted(sources,key=lambda s:s['source_record_id']):
-        by_date[s['acquisition_iso'][:10]].append(s)
+    order=lambda s:(-(s.get('registration_quality') or 0),timestamp_utc(s['acquisition_iso']),s['source_record_id'])
+    for s in sorted(sources,key=order):
+        by_date[timestamp_utc(s['acquisition_iso']).date().isoformat()].append(s)
     dates=sorted(by_date)
     features,manifest,counts=[],[],defaultdict(int)
     reused_assets=0
@@ -128,38 +131,68 @@ def build(sources,aoi,out, *, crs='EPSG:32646',size=1024,resolution=60,dem_paths
         key=f'{crs.replace(":","")}_r{resolution}_n{size}_x{x}_y{y}'
         transform=tile_transform(x,y,size,resolution)
         tile_extent=box(x*step,y*step,(x+1)*step,(y+1)*step)
-        images,assets=[],[]
+        images,assets,attributions,source_indices=[],[],[],[]
         for day in dates:
             eligible=[s for s in by_date[day] if transform_shape(transform_forward,shape(s['footprint'])).intersects(tile_extent)]
             path=out/'analysis-ready'/key/(day+'.tif')
+            provenance_path=path.with_name(day+'.sources.tif')
             stamp=path.with_suffix('.json')
             # New acquisitions invalidate only their intersecting dated tile assets.
             local_recipe={k:v for k,v in recipe.items() if k not in ('source_signatures','registration_offsets','temporal_sha256','min_area_ha')}
-            local_recipe['sources']={s['source_record_id']:[source_signatures[s['source_record_id']],s.get('shift_pixels',[0,0])] for s in eligible}
+            local_recipe['sources']={s['source_record_id']:[source_signatures[s['source_record_id']],s.get('shift_pixels',[0,0]),s.get('registration_quality')] for s in eligible}
             local_signature=hashlib.sha256(json.dumps(local_recipe,sort_keys=True).encode()).hexdigest()
-            if path.exists() and stamp.exists() and json.loads(stamp.read_text()).get('signature')==local_signature:
+            metadata=read_cache(stamp)
+            if path.exists() and provenance_path.exists() and metadata.get('signature')==local_signature:
                 with rasterio.open(path) as src: image=src.read(1)
+                with rasterio.open(provenance_path) as src: attribution=src.read(1)
                 reused_assets+=1
             else:
                 t=time.perf_counter()
                 halo=4
                 expanded=transform @ rasterio.Affine.translation(-halo,-halo)
                 mosaic=np.full((size+2*halo,size+2*halo),np.nan,'float32')
-                for s in eligible:
+                if len(eligible)>32:
+                    raise ValueError('At most 32 source fragments per dated tile are supported')
+                chosen=np.zeros(mosaic.shape,'uint32')
+                overlap_diagnostics=[]
+                for i,s in enumerate(eligible):
                     layer=warp(s['native_asset'],expanded,crs,size+2*halo,offset=s.get('shift_pixels',(0,0)))
+                    overlap=np.isfinite(mosaic)&np.isfinite(layer)&(mosaic>0)&(layer>0)
+                    if overlap.any():
+                        overlap_diagnostics.append({'source_record_id':s['source_record_id'],
+                            'overlap_pixels':int(overlap.sum()),
+                            'mean_absolute_difference_db':float(np.mean(np.abs(to_db(layer[overlap])-to_db(mosaic[overlap]))))})
+                    take=~np.isfinite(mosaic)&np.isfinite(layer)
+                    chosen[take]=np.uint32(1<<i)
                     mosaic=np.where(np.isfinite(mosaic),mosaic,layer)
                 image=smooth(mosaic)[halo:-halo,halo:-halo]
+                attribution=np.zeros(image.shape,'uint32')
+                for i,s in enumerate(eligible):
+                    contribution=ndi.maximum_filter(((chosen&np.uint32(1<<i))>0).astype('uint8'),3)[halo:-halo,halo:-halo]>0
+                    attribution[contribution]|=np.uint32(1<<i)
                 inside=geometry_mask([mapping(transform_shape(transform_forward,country))],out_shape=(size,size),transform=transform,invert=True)
                 image[~inside]=np.nan
+                attribution[~np.isfinite(image)]=0
                 geocoding_seconds+=time.perf_counter()-t
                 if np.isfinite(image).any():
                     write_raster(path,image,transform,crs)
-                    stamp.write_text(json.dumps({'signature':local_signature,'source_record_ids':[s['source_record_id'] for s in eligible],
+                    write_raster(provenance_path,attribution,transform,crs,nodata=0)
+                    metadata={'signature':local_signature,
+                        'source_record_ids':[s['source_record_id'] for i,s in enumerate(eligible) if (attribution&np.uint32(1<<i)).any()],
+                        'input_source_record_ids':[s['source_record_id'] for s in eligible],
+                        'source_index_records':{str(1<<i):s['source_record_id'] for i,s in enumerate(eligible)},
+                        'overlap_diagnostics':overlap_diagnostics,
+                        'mosaic_method':'first valid; highest measured registration quality, then UTC time and stable ID; 3x3 contribution bitmask',
                         'acquisition_date':day,'measurement':'sigma0_linear_power','nodata':'NaN, never stable',
-                        'geolocation_status':'GCP polynomial, not DEM terrain corrected'},indent=2))
+                        'geolocation_status':'GCP polynomial, not DEM terrain corrected'}
+                    write_json(stamp,metadata)
             images.append(image)
+            attributions.append(attribution)
+            source_indices.append(metadata.get('source_index_records',{}))
             if np.isfinite(image).any():
-                assets.append({'date':day,'asset':str(path.relative_to(out)), 'source_record_ids':[s['source_record_id'] for s in eligible]})
+                assets.append({'date':day,'asset':str(path.relative_to(out)),
+                               'provenance_asset':str(provenance_path.relative_to(out)),
+                               **{k:metadata[k] for k in ('source_record_ids','input_source_record_ids','overlap_diagnostics','source_index_records','mosaic_method')}})
         if not assets:
             continue
         stack=np.stack(images)
@@ -173,12 +206,12 @@ def build(sources,aoi,out, *, crs='EPSG:32646',size=1024,resolution=60,dem_paths
         if dem_paths:
             terrain_stamp=terrain_path.with_suffix('.json')
             terrain_signature=hashlib.sha256(json.dumps({k:recipe[k] for k in ('crs','size','resolution','terrain_inputs','heading','incidence','tiler_sha256')},sort_keys=True).encode()).hexdigest()
-            if terrain_path.exists() and terrain_stamp.exists() and json.loads(terrain_stamp.read_text()).get('signature')==terrain_signature:
+            if terrain_path.exists() and read_cache(terrain_stamp).get('signature')==terrain_signature:
                 with rasterio.open(terrain_path) as src: terrain=src.read()
             else:
                 terrain=terrain_tile(dem_paths,transform,crs,size,heading,incidence)
                 write_raster(terrain_path,terrain,transform,crs)
-                terrain_stamp.write_text(json.dumps({'signature':terrain_signature,'bands':['elevation_m','slope_deg','terrain_risk']},indent=2))
+                write_json(terrain_stamp,{'signature':terrain_signature,'bands':['elevation_m','slope_deg','terrain_risk']})
         else: terrain=np.full((3,size,size),np.nan,'float32')
         t=time.perf_counter()
         for class_id in (0,1,2,3,4,5,255):
@@ -194,14 +227,15 @@ def build(sources,aoi,out, *, crs='EPSG:32646',size=1024,resolution=60,dem_paths
                 if crop_area.is_empty: continue
                 risk_values=terrain[2][pixels]
                 known=np.isfinite(risk_values)
-                risk=float(risk_values[known].mean()*100) if known.any() else None
+                subset_risk=float(risk_values[known].mean()*100) if known.any() else None
+                known_fraction=float(known.mean())
+                risk=subset_risk if known.all() else None
                 magnitude=float(np.nanmean(summary['peak_delta_db'][pixels]))
                 area=crop_area.area/10000
                 first=int(summary['first_departure_index'][pixels].min())
                 last=int(summary['latest_observation_index'][pixels].max())
-                geographic=shape(transform_geom(crs,'EPSG:4326',mapping(crop_area)))
-                candidate_dates={dates[i] for i in range(len(dates)) if np.isfinite(stack[i][pixels]).any()}
-                refs=sorted({s['source_record_id'] for s in sources if s['acquisition_iso'][:10] in candidate_dates and shape(s['footprint']).intersects(geographic)})
+                refs=sorted({rid for i in range(len(dates)) for bit,rid in source_indices[i].items()
+                             if (attributions[i][pixels]&np.uint32(int(bit))).any()})
                 props={'id':f'{key}_c{class_id}_{direction}_{int(rid)}','tile_id':key,'primary_source':'RADARSAT-2',
                        'temporal_class':CLASS_NAMES[class_id],'class_id':class_id,'area_ha':area,
                        'first_observed':dates[first],'most_recent_observation':dates[last],
@@ -211,8 +245,14 @@ def build(sources,aoi,out, *, crs='EPSG:32646',size=1024,resolution=60,dem_paths
                        'supporting_observation_count':int(np.median(summary['support_count'][pixels])),
                        'validation_count':max(0,int(np.median(summary['support_count'][pixels]))-1),
                        'validation_kind':'within-stratum directional persistence; not independent ground truth',
-                       'terrain_risk_pct':risk,'terrain_known_fraction':float(known.mean()),
-                       'priority_score':abs(magnitude)*math.sqrt(area)*(1-risk/100) if risk is not None and known.all() else None,
+                       'terrain_risk_pct':risk,'terrain_known_fraction':known_fraction,
+                       'terrain_known_subset_risk_pct':subset_risk,
+                       'terrain_risk_bounds_pct':[(subset_risk or 0)*known_fraction,(subset_risk or 0)*known_fraction+(1-known_fraction)*100],
+                       'mean_elevation_m':float(np.nanmean(terrain[0][pixels])) if np.isfinite(terrain[0][pixels]).any() else None,
+                       'mean_slope_deg':float(np.nanmean(terrain[1][pixels])) if np.isfinite(terrain[1][pixels]).any() else None,
+                       'terrain_risk_method':recipe['terrain_geometry_mode'],
+                       'priority_score':abs(magnitude)*math.sqrt(area)*(1-(subset_risk or 0)/100)*(.5+.5*known_fraction),
+                       'priority_formula':'magnitude*sqrt(area)*(1-known_subset_risk)*(.5+.5*terrain_known_fraction); heuristic, not confidence',
                        'source_record_ids':refs,'tile_edge_fragment':bool(pixels[0].any() or pixels[-1].any() or pixels[:,0].any() or pixels[:,-1].any()),
                        'temporal_trajectory':[{'date':day,'mean_power':float(np.nanmean(stack[i][pixels])) if np.isfinite(stack[i][pixels]).any() else None} for i,day in enumerate(dates)],
                        'quality_flags':sorted({'approximate_GCP_geolocation','registration_inherited_not_remeasured',
@@ -225,7 +265,6 @@ def build(sources,aoi,out, *, crs='EPSG:32646',size=1024,resolution=60,dem_paths
         print(f'{key}: {len(assets)} dated observations, {len(features)} candidate fragments so far',flush=True)
     (out/'candidates').mkdir(exist_ok=True)
     catalogue={'type':'FeatureCollection','features':features}
-    (out/'candidates'/'catalogue.geojson').write_text(json.dumps(catalogue,allow_nan=False))
     # Crops only for the ten ranked investigation targets, all dates on identical spatial windows.
     ranked=sorted((f for f in features if f['properties']['priority_score'] is not None),key=lambda f:-f['properties']['priority_score'])[:10]
     for candidate in ranked:
@@ -245,8 +284,8 @@ def build(sources,aoi,out, *, crs='EPSG:32646',size=1024,resolution=60,dem_paths
             path=cropdir/(a['date']+'.png')
             Image.fromarray(image).save(path)
             p['crops'].append({'date':a['date'],'asset':str(path.relative_to(out))})
-    (out/'candidates'/'catalogue.geojson').write_text(json.dumps(catalogue,allow_nan=False))
-    (out/'manifest.json').write_text(json.dumps({'recipe':recipe,'signature':signature,'sources':sources,'tiles':manifest},indent=2))
+    write_json(out/'candidates'/'catalogue.geojson',catalogue)
+    write_json(out/'manifest.json',{'recipe':recipe,'signature':signature,'sources':sources,'tiles':manifest})
     metrics={'geographic_tiles':len(manifest),'dated_tile_assets':sum(len(m['assets']) for m in manifest),
         'unique_acquisition_dates':dates,'source_scene_count':len(sources),'candidate_fragments':len(features),
         'class_pixel_counts':dict(counts),'raw_bytes':sum(s['raw_bytes'] for s in sources),
@@ -256,7 +295,7 @@ def build(sources,aoi,out, *, crs='EPSG:32646',size=1024,resolution=60,dem_paths
         metrics[tier+'_bytes']=sum(p.stat().st_size for p in (out/tier).rglob('*') if p.is_file())
     metrics['raw_to_ard_ratio']=metrics['raw_bytes']/max(metrics['analysis-ready_bytes'],1)
     metrics['raw_to_candidate_ratio']=metrics['raw_bytes']/max(metrics['candidates_bytes'],1) if features else None
-    (out/'metrics.json').write_text(json.dumps(metrics,indent=2))
+    write_json(out/'metrics.json',metrics)
     return metrics
 
 
@@ -284,9 +323,9 @@ def main():
         report['output_directory']=str(directory)
         reports.append(report)
     args.out.mkdir(parents=True,exist_ok=True)
-    (args.out/'summary.json').write_text(json.dumps({'groups':reports,
+    write_json(args.out/'summary.json',{'groups':reports,
         'shared_terrain_bytes':sum(p.stat().st_size for p in (args.out/'terrain-cache').rglob('*') if p.is_file()),
-        'temporal_bands':['class_id','latest_delta_db','observation_count']},indent=2))
+        'temporal_bands':['class_id','latest_delta_db','observation_count']})
     print(json.dumps(reports,indent=2))
 
 

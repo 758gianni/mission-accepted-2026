@@ -1,0 +1,42 @@
+{
+  "temporal_rgb": {
+    "width": 1383,
+    "height": 1445,
+    "x": 0,
+    "y": 45,
+    "content_width": 1383,
+    "content_height": 1400
+  },
+  "imagery/T1_quicklook.png": {
+    "width": 988,
+    "height": 1044,
+    "x": 0,
+    "y": 44,
+    "content_width": 988,
+    "content_height": 1000
+  },
+  "imagery/T2_quicklook.png": {
+    "width": 988,
+    "height": 1044,
+    "x": 0,
+    "y": 44,
+    "content_width": 988,
+    "content_height": 1000
+  },
+  "imagery/T4_quicklook.png": {
+    "width": 988,
+    "height": 1044,
+    "x": 0,
+    "y": 44,
+    "content_width": 988,
+    "content_height": 1000
+  },
+  "imagery/T3_quicklook.png": {
+    "width": 988,
+    "height": 1044,
+    "x": 0,
+    "y": 44,
+    "content_width": 988,
+    "content_height": 1000
+  }
+}

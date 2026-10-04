@@ -1,6 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import './assets/css/index.css';
+import './assets/css/polish.css';
 import { Root } from './root';
 
 const root = document.getElementById('root');

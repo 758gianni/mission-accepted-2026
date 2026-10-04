@@ -1,35 +1,33 @@
-import type { ChangeMode } from '../change-modes';
-import { Download } from 'lucide-react';
+import { Compass, Play, Satellite, X } from 'lucide-react';
+import type { FC } from 'react';
+import type { DashboardContract } from '../terra-data';
 
-const Header = ({ mode }: { mode: ChangeMode }) => {
-	const download = () => {
-		const blob = new Blob([JSON.stringify({ category: mode.label, illustrative: true, events: mode.events }, null, 2)], { type: 'application/json' });
-		const url = URL.createObjectURL(blob);
-		const link = document.createElement('a');
-		link.href = url;
-		link.download = `${mode.id}-demo-changes.json`;
-		link.click();
-		URL.revokeObjectURL(url);
-	};
-	return (
-		<header className='select-none px-5 pb-4 pt-5 sm:px-8 flex flex-wrap items-center justify-center gap-x-8 gap-y-3 border-b border-rule'>
-			<div className='min-w-[min(100%,360px)] flex flex-1 flex-col gap-0.5'>
-				<h1 className='font-cond font-semibold text-[32px] sm:text-[40px] leading-[1.05] tracking-[-0.01em]'>Team Satellites</h1>
-				<span className='text-[15px] font-semibold'>Mission Accepted 2026</span>
+interface HeaderProps {
+	contract: DashboardContract;
+	presentationActive: boolean;
+	onTogglePresentation: () => void;
+}
+
+const Header: FC<HeaderProps> = ({ contract, presentationActive, onTogglePresentation }) => (
+	<header className='ts-topbar'>
+		<div className='ts-brand'>
+			<div className='ts-brand-mark'><Satellite size={20} strokeWidth={1.8} /></div>
+			<div>
+				<h1>TerraSignal</h1>
+				<p>EARTH OBSERVATION INTELLIGENCE</p>
 			</div>
-
-			<div className='flex flex-wrap items-end justify-center gap-3'>
-				<select aria-label='Comparison period' className='min-h-11 rounded border border-edge bg-panel px-3 text-[15px] text-ink'>
-					<option>Demo: before to after</option>
-				</select>
-
-				<button type='button' onClick={download} className='button border-edge'>
-					Download examples
-					<Download className='size-4 shrink-0' />
-				</button>
-			</div>
-		</header>
-	);
-};
+		</div>
+		<div className='ts-topbar-context'>
+			<span className='ts-live-dot' />
+			<div><strong>{contract.scene?.name ?? 'Area of interest'}</strong><span> · {contract.tile_processing?.acquisition_count ?? contract.acquisitions?.length ?? 0} source acquisitions</span></div>
+			<span className='ts-source-chip'><span>PRIMARY</span> RADARSAT-2</span>
+		</div>
+		<button type='button' className={`ts-present-button ${presentationActive ? 'is-active' : ''}`} onClick={onTogglePresentation}>
+			{presentationActive ? <X size={15} /> : <Play size={15} fill='currentColor' />}
+			{presentationActive ? 'Exit walkthrough' : 'Guided walkthrough'}
+			<Compass size={15} className='ts-present-compass' />
+		</button>
+	</header>
+);
 
 export { Header };

@@ -1,5 +1,5 @@
 import { motion, useReducedMotion } from 'framer-motion';
-import { ArrowUp, RotateCcw, MessageCircle, X } from 'lucide-react';
+import { ArrowUp, MessageCircle, RotateCcw, X } from 'lucide-react';
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react';
 
 export type ChatRole = 'user' | 'assistant';
@@ -28,9 +28,10 @@ const createId = () => crypto.randomUUID();
 
 const ChatPanel = ({ detectionType = 'deforestation', selectedClearing, sensitivityDb, suggestions = [], title = 'Ask about this area', placeholder = 'Ask about this change...', className = '', onClose, isOpen = true }: ChatPanelProps) => {
 	const reduceMotion = useReducedMotion();
+
 	const [messages, setMessages] = useState<ChatMessage[]>([]);
-	const [input, setInput] = useState('');
-	const [isSending, setIsSending] = useState(false);
+	const [input, setInput] = useState<string>('');
+	const [isSending, setIsSending] = useState<boolean>(false);
 	const [error, setError] = useState<string | null>(null);
 
 	const listRef = useRef<HTMLDivElement>(null);
@@ -39,10 +40,16 @@ const ChatPanel = ({ detectionType = 'deforestation', selectedClearing, sensitiv
 	const sendMessage = async (history: ChatMessage[]) => {
 		const response = await fetch('/api/chat', {
 			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
+			headers: {
+				'Content-Type': 'application/json',
+			},
 			body: JSON.stringify({
 				messages: history.slice(-40).map(({ role, content }) => ({ role, content })),
-				context: { selectedClearing, sensitivityDb, detectionType },
+				context: {
+					selectedClearing,
+					sensitivityDb,
+					detectionType,
+				},
 			}),
 		});
 
@@ -52,6 +59,7 @@ const ChatPanel = ({ detectionType = 'deforestation', selectedClearing, sensitiv
 		}
 
 		const data: unknown = await response.json();
+
 		if (!data || typeof data !== 'object' || !('reply' in data) || typeof data.reply !== 'string') {
 			throw new Error('Chat response did not contain a reply');
 		}
@@ -62,13 +70,24 @@ const ChatPanel = ({ detectionType = 'deforestation', selectedClearing, sensitiv
 	// Keep the newest message in view as the conversation grows.
 	useEffect(() => {
 		const list = listRef.current;
-		if (!list) return;
-		list.scrollTo({ top: list.scrollHeight, behavior: reduceMotion ? 'auto' : 'smooth' });
+
+		if (!list) {
+			return;
+		}
+
+		list.scrollTo({
+			top: list.scrollHeight,
+			behavior: reduceMotion ? 'auto' : 'smooth',
+		});
 	}, [messages, isSending, error, isOpen, reduceMotion]);
 
 	const resizeInput = () => {
 		const textarea = inputRef.current;
-		if (!textarea) return;
+
+		if (!textarea) {
+			return;
+		}
+
 		textarea.style.height = 'auto';
 		textarea.style.height = `${Math.min(textarea.scrollHeight, MAX_INPUT_HEIGHT)}px`;
 	};
@@ -79,7 +98,15 @@ const ChatPanel = ({ detectionType = 'deforestation', selectedClearing, sensitiv
 
 		try {
 			const reply = await sendMessage(history);
-			setMessages([...history, { id: createId(), role: 'assistant', content: reply }]);
+
+			setMessages([
+				...history,
+				{
+					id: createId(),
+					role: 'assistant',
+					content: reply,
+				},
+			]);
 		} catch (requestError) {
 			console.error('Chat request failed', requestError);
 			setError(requestError instanceof Error ? requestError.message : "Couldn't get a reply. Check your connection and try again.");
@@ -90,9 +117,13 @@ const ChatPanel = ({ detectionType = 'deforestation', selectedClearing, sensitiv
 
 	const handleSend = (text: string) => {
 		const content = text.trim();
-		if (!content || isSending) return;
+
+		if (!content || isSending) {
+			return;
+		}
 
 		const history: ChatMessage[] = [...messages, { id: createId(), role: 'user', content }];
+
 		setMessages(history);
 		setInput('');
 
@@ -118,9 +149,9 @@ const ChatPanel = ({ detectionType = 'deforestation', selectedClearing, sensitiv
 	};
 
 	// Enter sends, Shift+Enter adds a new line. Ignore Enter while an IME is composing text.
-	const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-		if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
-			event.preventDefault();
+	const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+		if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+			e.preventDefault();
 			handleSend(input);
 		}
 	};
@@ -131,9 +162,20 @@ const ChatPanel = ({ detectionType = 'deforestation', selectedClearing, sensitiv
 	return (
 		<section aria-label={title} className={`flex min-h-0 flex-1 flex-col bg-panel ${className}`}>
 			<header className='flex items-center gap-3 border-b border-rule px-5 py-4'>
-				<span className='flex size-10 shrink-0 items-center justify-center rounded-xl bg-selected'><MessageCircle className='size-5' aria-hidden='true' /></span>
-				<div className='min-w-0 flex-1'><h2 className='text-base font-semibold'>{title}</h2><p className='truncate text-xs text-muted'>{selectedClearing}</p></div>
-				{onClose && <motion.button type='button' onClick={onClose} aria-label='Close chat' whileTap={{ scale: 0.9 }} className='flex size-9 shrink-0 items-center justify-center rounded-full hover:bg-selected'><X className='size-4' aria-hidden='true' /></motion.button>}
+				<span className='flex size-10 shrink-0 items-center justify-center rounded-xl bg-selected'>
+					<MessageCircle className='size-5' aria-hidden='true' />
+				</span>
+
+				<div className='min-w-0 flex-1'>
+					<h2 className='text-base font-semibold'>{title}</h2>
+					<p className='truncate text-xs text-muted'>{selectedClearing}</p>
+				</div>
+
+				{onClose && (
+					<motion.button type='button' onClick={onClose} aria-label='Close chat' whileTap={{ scale: 0.9 }} className='flex size-9 shrink-0 items-center justify-center rounded-full hover:bg-selected'>
+						<X className='size-4' aria-hidden='true' />
+					</motion.button>
+				)}
 			</header>
 
 			<div ref={listRef} className='min-h-0 flex-1 overflow-y-auto px-5 py-4' aria-live='polite'>

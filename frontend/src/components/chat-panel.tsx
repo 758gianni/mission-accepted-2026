@@ -215,6 +215,7 @@ const ChatPanel = ({ detectionType = 'deforestation', selectedClearing, sensitiv
 				{error && (
 					<div role='alert' className='mt-4 flex flex-wrap items-center gap-3'>
 						<p className='text-[15px] text-loss'>{error}</p>
+
 						<button type='button' onClick={handleRetry} className='inline-flex min-h-[44px] items-center gap-2 rounded border border-edge px-3.5 text-[15px] hover:bg-selected'>
 							<RotateCcw className='size-4 shrink-0' aria-hidden='true' />
 							Try again
@@ -227,7 +228,9 @@ const ChatPanel = ({ detectionType = 'deforestation', selectedClearing, sensitiv
 				<label htmlFor='chat-input' className='sr-only'>
 					Message
 				</label>
+
 				<textarea id='chat-input' ref={inputRef} rows={1} maxLength={4000} value={input} onChange={handleInputChange} onKeyDown={handleKeyDown} placeholder={placeholder} className='min-h-[44px] min-w-0 flex-1 resize-none rounded-xl border border-edge bg-paper px-3 py-2.5 text-[15px] leading-normal placeholder:text-muted' />
+
 				<button type='submit' disabled={!canSend} aria-label='Send message' className='inline-flex size-11 shrink-0 items-center justify-center rounded bg-ink text-panel hover:bg-ink/90 disabled:opacity-40'>
 					<ArrowUp className='size-5' aria-hidden='true' />
 				</button>

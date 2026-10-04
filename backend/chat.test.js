@@ -55,20 +55,28 @@ test('rejects empty OpenAI replies', async (t) => {
 	assert.equal(response.status, 502);
 });
 
-for (const [detectionType, title] of [['wildfire', 'Western ridge possible burn'], ['water', 'River bend water gain']]) {
- test(`accepts ${detectionType} context and supplies the matching facts`, async (t) => {
-  const response = await request(t, async (params) => {
-   assert.match(params.instructions, new RegExp(title));
-   assert.match(params.instructions, /not active-fire detections/);
-   return { output_text: 'This is an illustrative change.' };
-  }, { ...validRequest, context: { ...validRequest.context, detectionType, selectedClearing: title } });
-  assert.equal(response.status, 200);
- });
+for (const [detectionType, title] of [
+	['wildfire', 'Western ridge possible burn'],
+	['water', 'River bend water gain'],
+]) {
+	test(`accepts ${detectionType} context and supplies the matching facts`, async (t) => {
+		const response = await request(
+			t,
+			async (params) => {
+				assert.match(params.instructions, new RegExp(title));
+				assert.match(params.instructions, /not active-fire detections/);
+				return { output_text: 'This is an illustrative change.' };
+			},
+			{ ...validRequest, context: { ...validRequest.context, detectionType, selectedClearing: title } },
+		);
+		assert.equal(response.status, 200);
+	});
 }
 
 test('rejects a selected event from a different category', async (t) => {
- const response = await request(t, () => assert.fail('OpenAI should not be called'), {
-  ...validRequest, context: { ...validRequest.context, detectionType: 'water' },
- });
- assert.equal(response.status, 400);
+	const response = await request(t, () => assert.fail('OpenAI should not be called'), {
+		...validRequest,
+		context: { ...validRequest.context, detectionType: 'water' },
+	});
+	assert.equal(response.status, 400);
 });

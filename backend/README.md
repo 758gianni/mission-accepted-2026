@@ -1,16 +1,18 @@
-# OpenAI chatbot
+# TerraSignal Ask assistant
 
-The existing floating chat calls `POST /api/chat`. This Node server uses the official OpenAI SDK and Responses API. The key stays in the ignored `backend/.env.local` file and is never sent to the browser.
+The floating dashboard assistant sends natural-language explanations to the TerraSignal API, which calls the configured OpenRouter-compatible model. Candidate filtering and map actions are evaluated locally from the loaded catalogue; only concise explanations go to the model. The API receives the grounded local answer and a small set of dataset evidence. The API key stays in the server process.
 
-Run the API in one terminal:
+The root `.env` supplies `SWARMFORGE_MODEL_BASE_URL`, `SWARMFORGE_MODEL_API_KEY`, and `SWARMFORGE_MODEL_NAME`. Do not copy the key into frontend configuration.
+
+Start the API in one terminal:
 
 ```sh
 cd backend
 npm install
-npm run dev
+npm run dev:terrasignal
 ```
 
-Run the frontend in another terminal:
+Start the dashboard in another terminal:
 
 ```sh
 cd frontend
@@ -18,10 +20,8 @@ npm install
 npm run dev
 ```
 
-Vite proxies `/api` to `http://127.0.0.1:3001`. Restart Vite after changing its configuration. `npm run preview` does not provide the API proxy; for deployment, route `/api/chat` to the backend on the same origin and supply `OPENAI_API_KEY` through the host's secret environment settings. The server binds to localhost for local development.
+Vite proxies `/api` to `http://127.0.0.1:3001`. The API binds to localhost for local development. If OpenRouter is unavailable, the chat falls back to the deterministic local dataset assistant. Set `TERRASIGNAL_CHAT_PORT` to change the API port and update the Vite proxy to match.
 
-Optional backend settings: `OPENAI_MODEL` (default `gpt-5.4-mini`) and `PORT` (default `3001`; update the Vite proxy if changed). The provisioned key expires after seven days; replace it when it expires.
+The earlier Mission Accepted demo endpoint remains available through `npm run dev` and `/api/chat`; it uses its separate `backend/.env.local` OpenAI configuration. TerraSignal uses `/api/terrasignal-chat`.
 
-The assistant receives conversation history, selected clearing, radar sensitivity, and the dashboard's clearing locations. It is instructed to acknowledge placeholder measurements and dates. It has no live imagery access. API billing is separate from ChatGPT subscriptions.
-
-Run backend checks with `npm test`.
+Run backend checks with `npm test` and the dashboard checks with `cd frontend && npm test`.

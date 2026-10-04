@@ -245,13 +245,14 @@ const ChangeMap: FC<ChangeMapProps> = ({ contract, features, selectedId, layer, 
 					</g>}
 					{showFootprints && (contract.acquisitions ?? []).map((acquisition, index) => {
 						const path = geometryPath(acquisition.footprint, bounds, MAP_VIEW_WIDTH, MAP_VIEW_HEIGHT, projectMapCoordinate);
-						return path ? <path key={acquisition.id} d={path} fill='none' stroke={footprintColor(index)} strokeWidth={2 / displayView.zoom} strokeDasharray={`${7 / displayView.zoom} ${4 / displayView.zoom}`} opacity={regionalView ? .3 : .8} pointerEvents='none' /> : null;
+						return path ? <path key={acquisition.id} d={path} fill='none' stroke={footprintColor(index)} strokeWidth={2 / displayView.zoom} strokeDasharray={`${7 / displayView.zoom} ${4 / displayView.zoom}`} opacity={regionalView ? .16 : .4} pointerEvents='none' /> : null;
 					})}
+					<g className='ts-detections' key={features.length}>
 					{(regionalView || aggregateDetections) && displayView.zoom < 5 ? clusters.map((cluster, index) => {
 						const color = cluster.validatedCount ? '#f4ce78' : cluster.persistentCount ? '#f06a87' : '#64d4d2';
 						const radius = (11 + Math.min(10, Math.log2(cluster.count + 1) * 3)) / displayView.zoom;
 						return <g key={`${Math.round(cluster.x)}-${Math.round(cluster.y)}-${index}`} role='button' tabIndex={0}
-							aria-label={`Zoom to cluster of ${cluster.count} anomalies`} className='ts-cluster-marker'
+							aria-label={`Zoom to cluster of ${cluster.count} anomalies`} className='ts-cluster-marker' opacity={selected && !cluster.features.some((feature) => String(feature.properties.id) === String(selectedId)) ? .35 : 1}
 							data-candidate-ids={JSON.stringify(cluster.features.map((feature) => String(feature.properties.id)))}
 							onClick={() => focusCluster(cluster)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') focusCluster(cluster); }}>
 							<title>{`${cluster.count} detections · ${cluster.persistentCount} persistent · ${cluster.validatedCount} independently supported`}</title>
@@ -263,14 +264,14 @@ const ChangeMap: FC<ChangeMapProps> = ({ contract, features, selectedId, layer, 
 						const d = geometryPath(feature.geometry, bounds, MAP_VIEW_WIDTH, MAP_VIEW_HEIGHT, projectMapCoordinate);
 						const isSelected = String(feature.properties.id) === String(selectedId);
 						const color = temporalColor(feature);
-						return <path key={String(feature.properties.id)} d={d} fill={color} fillOpacity={isSelected ? .25 : selected ? .04 : .12}
+						return <path key={String(feature.properties.id)} d={d} fill={color} opacity={selected && !isSelected ? .35 : 1} fillOpacity={isSelected ? .25 : .12}
 							stroke={isSelected ? '#f4d17f' : color} strokeWidth={(isSelected ? 3.2 : 1.15) / displayView.zoom} strokeLinejoin='round'
 							className={`ts-candidate-shape ${isSelected ? 'is-selected' : ''}`} data-candidate-id={String(feature.properties.id)} role='button' tabIndex={0} aria-label={`Select region ${feature.properties.id}`}
 							onClick={() => focusFeature(feature)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') focusFeature(feature); }} />;
 					}) : visiblePoints.map(({ feature, center: [x, y] }) => {
 						const isSelected = String(feature.properties.id) === String(selectedId);
 						return <circle key={String(feature.properties.id)} cx={x} cy={y} r={(isSelected ? 5 : 3) / displayView.zoom}
-							fill={isSelected ? '#f4d17f' : temporalColor(feature)} fillOpacity={isSelected ? 1 : 0.82}
+							fill={isSelected ? '#f4d17f' : temporalColor(feature)} fillOpacity={isSelected ? 1 : selected ? .3 : .82}
 							stroke='#111a16' strokeWidth={0.7 / displayView.zoom} className='ts-candidate-point' data-candidate-id={String(feature.properties.id)}
 							role='button' tabIndex={0} aria-label={`Select region ${feature.properties.id}`}
 							onClick={() => focusFeature(feature)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') focusFeature(feature); }} />;
@@ -279,6 +280,7 @@ const ChangeMap: FC<ChangeMapProps> = ({ contract, features, selectedId, layer, 
 						const d = geometryPath(selected.geometry, bounds, MAP_VIEW_WIDTH, MAP_VIEW_HEIGHT, projectMapCoordinate);
 						return <path d={d} fill='#f4d17f' fillOpacity='.55' stroke='#fff2ca' strokeWidth={3 / displayView.zoom} pointerEvents='none' />;
 					})()}
+					</g>
 				</g></g>
 			</svg>
 			<button type='button' className='ts-detection-mode' aria-pressed={aggregateDetections} disabled={regionalView || displayView.zoom >= 5} onClick={() => setAggregateDetections((current) => !current)}>{drawPolygons ? 'Candidate geometry' : displayView.zoom >= 5 ? 'Individual detections' : regionalView || aggregateDetections ? 'Clustered detections' : 'Individual detections'}<span>{displayView.zoom >= 5 ? 'Select a signal to inspect evidence' : regionalView ? 'Zoom to resolve individual signals' : aggregateDetections ? 'Show individual points' : 'Group nearby points'}</span></button>

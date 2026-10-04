@@ -7,7 +7,7 @@
         "dev": "vite",
         "build": "tsc -b && vite build",
         "lint": "eslint .",
-        "test": "bun test src/terra-data.test.ts",
+        "test": "bun test src/terra-data.test.ts src/assistant.test.ts",
         "test:e2e": "playwright test --config=playwright.config.ts",
         "preview": "vite preview"
     },

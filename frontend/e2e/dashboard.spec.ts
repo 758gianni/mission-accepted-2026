@@ -28,7 +28,7 @@ test('supports drag pan and wheel, button, and double-click zoom', async ({ page
 	await expect.poll(async () => Number(await map.getAttribute('data-map-zoom'))).toBeGreaterThan(zoomBeforeDoubleClick);
 });
 
-test('candidate selection remains available after panning and return restores regional overview', async ({ page }) => {
+test('candidate selection remains available after panning and return restores the previous map state', async ({ page }) => {
 	await page.goto('/');
 	const map = page.getByTestId('map-viewport');
 	const box = await map.boundingBox();
@@ -51,9 +51,8 @@ test('candidate selection remains available after panning and return restores re
 	await page.getByRole('button', { name: 'Back to queue' }).click();
 	await expect(page.getByRole('complementary', { name: 'Ranked anomaly queue' })).toBeVisible();
 	await expect(page.getByText('Region 2', { exact: true })).toBeVisible();
-	await expect.poll(() => map.getAttribute('data-map-center')).toBe('700,450');
+	await expect.poll(() => map.getAttribute('data-map-center')).toBe(pannedCenter);
 	await expect.poll(async () => Number(await map.getAttribute('data-map-zoom'))).toBe(1);
-	await expect(map.getAttribute('data-map-center')).not.toBe(pannedCenter);
 });
 
 test('renders every georeferenced processing tile and uses configured AOI metadata', async ({ page, request }) => {
@@ -69,12 +68,12 @@ test('renders every georeferenced processing tile and uses configured AOI metada
 		else expect(contract.map_bounds[edge]).toBeGreaterThanOrEqual(contract.image_bounds[edge]);
 	}
 	await page.goto('/');
-	await expect(page.getByText(contract.scene.name, { exact: true })).toBeVisible();
+	await expect(page.getByRole('banner').getByText(contract.scene.name, { exact: true })).toBeVisible();
 	await expect(page.getByText(/coastal/i)).toHaveCount(0);
 	const metrics = page.getByRole('region', { name: 'AOI, coverage, and storage reduction metrics' });
 	await expect(metrics.getByText(`${Math.round(contract.tile_processing.analysis_valid_area_km2).toLocaleString()} km²`)).toBeVisible();
 	await expect(metrics.getByText(`${Math.round(contract.tile_processing.satellite_coverage_area_km2).toLocaleString()} km²`)).toBeVisible();
-	await expect(metrics.getByText('Not recorded')).toBeVisible();
+	await expect(metrics.getByText('Not recorded')).toHaveCount(0);
 	const tiles = page.locator('.ts-map-tile');
 	await expect(tiles).toHaveCount(0);
 	await expect(page.locator('.ts-coverage-footprint')).toHaveCount(contract.tiles.length);
@@ -141,6 +140,12 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1920, height: 108
 	test(`top-level metrics do not overlap at ${viewport.width}×${viewport.height}`, async ({ page }) => {
 		await page.setViewportSize(viewport);
 		await page.goto('/');
+		const metrics = page.getByRole('region', { name: 'AOI, coverage, and storage reduction metrics' });
+		const blocks = await metrics.locator(':scope > div').evaluateAll((items) => items.map((item) => ({ width: item.clientWidth, contentWidth: item.scrollWidth })));
+		expect(blocks.every((block) => block.contentWidth <= block.width + 1)).toBeTruthy();
+		const queueText = await page.locator('.ts-queue-sub, .ts-mini-status').evaluateAll((items) => items.map((item) => ({ width: item.clientWidth, contentWidth: item.scrollWidth })));
+		expect(queueText.every((item) => item.contentWidth <= item.width + 1)).toBeTruthy();
+		expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
 		const flow = page.getByTestId('data-reduction');
 		await expect(flow).toBeVisible();
 		const values = await flow.locator('[data-metric-value]').evaluateAll((items) => items.map((item) => {
@@ -183,7 +188,7 @@ test('judge flow preserves detections through clustering and opens the investiga
 	await expect(page.locator('.ts-sar-detail')).toHaveAttribute('opacity', '1');
 	await expect(page.locator('.ts-candidate-shape.is-selected')).toHaveCount(1);
 	await expect(investigation.getByText('Possible new water body', { exact: true })).toBeVisible();
-	await expect(investigation.getByText('INVESTIGATION HYPOTHESIS · UNVERIFIED', { exact: true })).toBeVisible();
+	await expect(investigation.getByText('Unverified interpretation', { exact: true })).toBeVisible();
 	const contract = await (await page.request.get('/data/derived/contract.json')).json();
 	await expect(page.locator('.ts-map-evidence .ts-film-card')).toHaveCount(contract.acquisitions.length);
 });
@@ -217,4 +222,38 @@ test('map fullscreen preserves exploration, filters, and selection on exit', asy
 	await page.getByRole('button', { name: 'Enter map fullscreen' }).click();
 	await page.evaluate(() => document.exitFullscreen());
 	await expect(page.getByRole('button', { name: 'Enter map fullscreen' })).toBeVisible();
+});
+
+test('cluster expansion and funnel stages share the real map filters', async ({ page }) => {
+	await page.goto('/');
+	const map = page.getByTestId('map-viewport');
+	const center = await map.getAttribute('data-map-center');
+	await page.locator('.ts-cluster-marker').first().click();
+	await expect.poll(async () => Number(await map.getAttribute('data-map-zoom'))).toBeGreaterThan(1);
+	await expect.poll(() => map.getAttribute('data-map-center')).not.toBe(center);
+	const funnel = page.getByRole('region', { name: 'Candidate reduction funnel' });
+	for (const [stage, expected] of [['Seasonal', 440], ['Persistent', 80], ['Independent support', 11], ['Detected', 525]] as const) {
+		await funnel.getByRole('button', { name: new RegExp(stage) }).click();
+		await expect(funnel.locator('button[aria-pressed="true"]')).toHaveCount(1);
+		await expect.poll(() => page.locator('.ts-cluster-marker').evaluateAll((items) => items.reduce((count, item) => count + JSON.parse(item.getAttribute('data-candidate-ids') ?? '[]').length, 0))).toBe(expected);
+	}
+});
+
+test('investigation restores the prior filter, layer, zoom and camera', async ({ page }) => {
+	await page.goto('/');
+	const map = page.getByTestId('map-viewport');
+	const filters = page.getByRole('navigation', { name: 'Filter anomaly classes' });
+	await filters.getByRole('button', { name: /^Persistent/ }).click();
+	await page.getByRole('button', { name: 'Observation coverage', exact: true }).click();
+	await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
+	await expect.poll(() => map.getAttribute('data-map-zoom')).toBe('1.45');
+	const previousCenter = await map.getAttribute('data-map-center');
+	await page.locator('.ts-queue-item').first().click();
+	await expect.poll(async () => Number(await map.getAttribute('data-map-zoom'))).toBeGreaterThan(10);
+	await page.getByRole('button', { name: 'Temporal behaviour', exact: true }).click();
+	await page.getByRole('button', { name: 'Back to queue' }).click();
+	await expect(filters.getByRole('button', { name: /^Persistent/ })).toHaveAttribute('aria-pressed', 'true');
+	await expect(page.getByRole('button', { name: 'Observation coverage', exact: true })).toHaveAttribute('aria-pressed', 'true');
+	await expect.poll(() => map.getAttribute('data-map-zoom')).toBe('1.45');
+	await expect.poll(() => map.getAttribute('data-map-center')).toBe(previousCenter);
 });

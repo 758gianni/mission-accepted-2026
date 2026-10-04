@@ -1,6 +1,9 @@
 import { expect, test } from '@playwright/test';
 
 test('selected candidate supports chronological scrubbing, linked thumbnails and paused keyboard stepping', async ({ page }) => {
+	const errors: string[] = [];
+	page.on('pageerror', (error) => errors.push(error.message));
+	page.on('console', (message) => { if (message.type() === 'error') errors.push(`${message.text()} ${message.location().url}`); });
 	await page.goto('/');
 	await page.locator('.ts-queue-item').first().click();
 	const viewer = page.getByRole('region', { name: 'Temporal evidence viewer' });
@@ -26,6 +29,9 @@ test('selected candidate supports chronological scrubbing, linked thumbnails and
 	expect(new Set(crops).size).toBe(1);
 	await viewer.getByRole('checkbox', { name: 'Candidate outline' }).uncheck();
 	await expect(viewer.locator('.ts-temporal-frame path')).toHaveCount(0);
+	expect(errors).toEqual([]);
+	const filmstrip = page.locator('.ts-filmstrip');
+	expect(await filmstrip.evaluate((element) => element.getBoundingClientRect().right <= window.innerWidth)).toBeTruthy();
 });
 
 test('playback advances, loops, pauses, and resets when a different candidate is opened', async ({ page }) => {

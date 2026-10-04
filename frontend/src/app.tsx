@@ -1,4 +1,4 @@
-import { Eye, EyeOff, Layers, LocateFixed, Maximize2, Minimize2, Mountain, Satellite, Waves } from 'lucide-react';
+import { Eye, EyeOff, Layers, LocateFixed, Maximize2, Minimize2, Mountain, Satellite, Waves, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type FC } from 'react';
 import { ChangeMap, type MapView } from './components/change-map';
 import { AcquisitionEvidence } from './components/acquisition-evidence';
@@ -8,6 +8,8 @@ export type MapLayer = 'temporal_rgb' | 'seasonal_transient' | 'persistent_candi
 
 interface AppProps {
 	contract: DashboardContract;
+	assistantQueryLabel?: string;
+	onClearAssistantQuery: () => void;
 	features: CandidateFeature[];
 	filter: CandidateFilter;
 	selectedId: string | number | null;
@@ -39,7 +41,7 @@ const layers: Array<{ id: MapLayer; label: string; icon: typeof Layers }> = [
 	{ id: 'terrain_qa_mask', label: 'Terrain QA', icon: Mountain },
 ];
 
-const App: FC<AppProps> = ({ contract, features, filter, selectedId, layer, view, showFootprints, onFilter, onSelect, onLayer, onView, onToggleFootprints, onReset }) => {
+const App: FC<AppProps> = ({ contract, assistantQueryLabel, onClearAssistantQuery, features, filter, selectedId, layer, view, showFootprints, onFilter, onSelect, onLayer, onView, onToggleFootprints, onReset }) => {
 	const mapFrameRef = useRef<HTMLDivElement>(null);
 	const [isFullscreen, setIsFullscreen] = useState(false);
 	const [fullscreenError, setFullscreenError] = useState('');
@@ -71,11 +73,12 @@ const App: FC<AppProps> = ({ contract, features, filter, selectedId, layer, view
 	return (
 		<section className='ts-map-column' aria-label='Regional anomaly map'>
 			<div className='ts-map-heading'>
-				<div><span className='ts-eyebrow'>REGIONAL DISCOVERY</span><h2>Change intelligence map</h2></div>
+				<div><span className='ts-eyebrow'>Regional discovery</span><h2>Change intelligence map</h2></div>
 				<div className='ts-map-heading-meta'><span className='ts-orbit-mark' />{contract.scene?.beam ?? 'SAR'} · {contract.scene?.polarization ?? 'multi-band'} · {contract.scene?.orbit ?? 'multi-orbit'}</div>
 			</div>
 			{!isFullscreen && filterRail}
 			<div className='ts-map-frame' ref={mapFrameRef}>
+				{assistantQueryLabel && <div className='ts-map-query' role='status'><span>Ask filter · {assistantQueryLabel}</span><button type='button' aria-label='Clear assistant filter' onClick={onClearAssistantQuery}><X size={13} /></button></div>}
 				{isFullscreen && <div className='ts-fullscreen-header'><strong>Change intelligence map</strong>{filterRail}</div>}
 				<button type='button' className='ts-map-fullscreen' aria-label={isFullscreen ? 'Exit map fullscreen' : 'Enter map fullscreen'} title={isFullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen map'} onClick={toggleFullscreen}>{isFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>
 				{fullscreenError && <div className='ts-fullscreen-error' role='status'>{fullscreenError}</div>}

@@ -68,7 +68,7 @@ const AcquisitionEvidence: FC<{ contract: DashboardContract; candidate: Candidat
 	const select = (nextIndex: number) => { setPlaying(false); setIndex(Math.max(0, Math.min(observations.length - 1, nextIndex))); };
 
 	return <section className='ts-evidence-section'>
-		<div className='ts-section-kicker'><span>OBSERVATION SEQUENCE</span><span>{observations.length} observations · same ground crop</span></div>
+		<div className='ts-section-kicker'><span>Observation sequence</span><span>{observations.length} observations · same ground crop</span></div>
 		<section className='ts-temporal-viewer' aria-label='Temporal evidence viewer' tabIndex={0} onKeyDown={(event) => {
 			if (event.target instanceof HTMLElement && ['INPUT', 'SELECT'].includes(event.target.tagName)) return;
 			if (observations.length && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
@@ -83,7 +83,7 @@ const AcquisitionEvidence: FC<{ contract: DashboardContract; candidate: Candidat
 						</div>)}
 					</div>
 					<div className='ts-temporal-caption' aria-live={playing ? 'off' : 'polite'}>
-						<span className='ts-temporal-counter'>OBSERVATION {String(index + 1).padStart(2, '0')} / {String(observations.length).padStart(2, '0')}</span>
+						<span className='ts-temporal-counter'>Observation {String(index + 1).padStart(2, '0')} / {String(observations.length).padStart(2, '0')}</span>
 						<strong data-testid='temporal-date'>{dateText(current.date)}</strong>
 						<span data-testid='temporal-sensor'>{current.sensor ?? 'EO source'}</span>
 						<span className={`ts-temporal-role ${isSupporting(current) ? 'is-supporting' : ''}`} data-testid='temporal-role'>{role(current)}</span>

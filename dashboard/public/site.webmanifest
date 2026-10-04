@@ -1,0 +1,24 @@
+{
+    "name": "Team Satellites | Mission Accepted 2026",
+    "short_name": "Team Satellites",
+    "description": "Satellite change detection for forest clearings",
+    "start_url": "/",
+    "scope": "/",
+    "display": "standalone",
+    "theme_color": "#f6f7f3",
+    "background_color": "#e9ece6",
+    "icons": [
+        {
+            "src": "/android-chrome-192x192.png",
+            "sizes": "192x192",
+            "type": "image/png",
+            "purpose": "any"
+        },
+        {
+            "src": "/android-chrome-512x512.png",
+            "sizes": "512x512",
+            "type": "image/png",
+            "purpose": "any"
+        }
+    ]
+}

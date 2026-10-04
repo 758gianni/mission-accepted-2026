@@ -13,14 +13,14 @@ const icons = [ScanSearch, Filter, ArrowDownRight, Check];
 
 const ReductionFunnel: FC<ReductionFunnelProps> = ({ stages, activeFilter, onSelect }) => <section className='ts-funnel' aria-label='Candidate reduction funnel'>
 	<div className='ts-funnel-heading'>
-		<div><span className='ts-eyebrow'>FROM SIGNAL VOLUME TO INVESTIGATION</span><h2>Find the changes that persist.</h2></div>
+		<div><span className='ts-eyebrow'>From signal volume to investigation</span><h2>Find the changes that persist.</h2></div>
 		<p>Explore the signals. Isolate persistence. Inspect the evidence.</p>
 	</div>
 	<div className='ts-funnel-flow'>
 		<div className='ts-flow-track' aria-hidden='true'><span /></div>
 		{stages.map((stage, index) => {
 			const Icon = icons[index] ?? CircleDot;
-			const active = activeFilter === stage.id || (stage.id === 'persistent' && activeFilter === 'validated');
+			const active = activeFilter === stage.id;
 			return <button type='button' key={stage.id} className={`ts-funnel-stage ${active ? 'is-active' : ''} stage-${index}`} aria-pressed={active} onClick={() => onSelect(stage.id)}>
 				<span className='ts-stage-symbol'><Icon size={15} /></span>
 				<strong>{stage.value.toLocaleString()}</strong>

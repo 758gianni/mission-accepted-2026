@@ -1,5 +1,6 @@
 import { motion, useReducedMotion } from 'framer-motion';
 import { ArrowUp, MessageCircle, RotateCcw, X } from 'lucide-react';
+import { localAssistant, type AssistantAction, type AssistantContext, type AssistantProvider, type AssistantReply } from '../assistant';
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react';
 
 export type ChatRole = 'user' | 'assistant';
@@ -8,16 +9,14 @@ export interface ChatMessage {
 	id: string;
 	role: ChatRole;
 	content: string;
+	reply?: AssistantReply;
 }
 
 interface ChatPanelProps {
-	detectionType?: string;
-	selectedClearing: string;
-	sensitivityDb: number;
+	context: AssistantContext;
+	provider?: AssistantProvider;
+	onAction: (action: AssistantAction) => void;
 	suggestions?: string[];
-	title?: string;
-	placeholder?: string;
-	className?: string;
 	onClose?: () => void;
 	isOpen?: boolean;
 }
@@ -26,7 +25,10 @@ const MAX_INPUT_HEIGHT = 160;
 
 const createId = () => crypto.randomUUID();
 
-const ChatPanel = ({ detectionType = 'deforestation', selectedClearing, sensitivityDb, suggestions = [], title = 'Ask about this area', placeholder = 'Ask about this change...', className = '', onClose, isOpen = true }: ChatPanelProps) => {
+const ChatPanel = ({ context, provider = localAssistant, onAction, suggestions = [], onClose, isOpen = true }: ChatPanelProps) => {
+	const title = 'Ask TerraSignal';
+	const selectedClearing = context.selectedId == null ? context.contract.scene?.name ?? 'Current dataset' : `Region ${context.selectedId} selected`;
+	const placeholder = 'Ask about evidence or find anomalies…';
 	const reduceMotion = useReducedMotion();
 
 	const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -38,33 +40,13 @@ const ChatPanel = ({ detectionType = 'deforestation', selectedClearing, sensitiv
 	const inputRef = useRef<HTMLTextAreaElement>(null);
 
 	const sendMessage = async (history: ChatMessage[]) => {
-		const response = await fetch('/api/chat', {
-			method: 'POST',
-			headers: {
-				'Content-Type': 'application/json',
-			},
-			body: JSON.stringify({
-				messages: history.slice(-40).map(({ role, content }) => ({ role, content })),
-				context: {
-					selectedClearing,
-					sensitivityDb,
-					detectionType,
-				},
-			}),
-		});
-
-		if (!response.ok) {
-			const failure: unknown = await response.json().catch(() => null);
-			throw new Error(failure && typeof failure === 'object' && 'error' in failure && typeof failure.error === 'string' ? failure.error : 'Could not get a reply. Please try again.');
+		const request = { question: history.at(-1)!.content, context };
+		try { return await provider.answer(request); }
+		catch (failure) {
+			if (provider === localAssistant) throw failure;
+			const fallback = await localAssistant.answer(request);
+			return { ...fallback, text: `The configured provider is unavailable. Local dataset answer:\n\n${fallback.text}` };
 		}
-
-		const data: unknown = await response.json();
-
-		if (!data || typeof data !== 'object' || !('reply' in data) || typeof data.reply !== 'string') {
-			throw new Error('Chat response did not contain a reply');
-		}
-
-		return data.reply;
 	};
 
 	// Keep the newest message in view as the conversation grows.
@@ -104,11 +86,11 @@ const ChatPanel = ({ detectionType = 'deforestation', selectedClearing, sensitiv
 				{
 					id: createId(),
 					role: 'assistant',
-					content: reply,
+					content: reply.text,
+					reply,
 				},
 			]);
 		} catch (requestError) {
-			console.error('Chat request failed', requestError);
 			setError(requestError instanceof Error ? requestError.message : "Couldn't get a reply. Check your connection and try again.");
 		} finally {
 			setIsSending(false);
@@ -160,7 +142,7 @@ const ChatPanel = ({ detectionType = 'deforestation', selectedClearing, sensitiv
 	const isEmpty = messages.length === 0;
 
 	return (
-		<section aria-label={title} className={`flex min-h-0 flex-1 flex-col bg-panel ${className}`}>
+		<section aria-label={title} className='ts-assistant-panel flex min-h-0 flex-1 flex-col'>
 			<header className='flex items-center gap-3 border-b border-rule px-5 py-4'>
 				<span className='flex size-10 shrink-0 items-center justify-center rounded-xl bg-selected'>
 					<MessageCircle className='size-5' aria-hidden='true' />
@@ -168,7 +150,7 @@ const ChatPanel = ({ detectionType = 'deforestation', selectedClearing, sensitiv
 
 				<div className='min-w-0 flex-1'>
 					<h2 className='text-base font-semibold'>{title}</h2>
-					<p className='truncate text-xs text-muted'>{selectedClearing}</p>
+					<p className='truncate text-xs text-muted'>{selectedClearing}</p><small className='ts-assistant-provider'>{provider.name}</small>
 				</div>
 
 				{onClose && (
@@ -181,7 +163,7 @@ const ChatPanel = ({ detectionType = 'deforestation', selectedClearing, sensitiv
 			<div ref={listRef} className='min-h-0 flex-1 overflow-y-auto px-5 py-4' aria-live='polite'>
 				{isEmpty ? (
 					<div className='flex flex-col gap-3'>
-						<p className='max-w-[40ch] text-[15px] leading-normal text-muted'>Ask about the selected change, possible causes, or how to validate it.</p>
+						<p className='max-w-[40ch] text-[15px] leading-normal text-muted'>Ask about recorded evidence, dataset results, or matching anomalies. Suggested map actions are optional and reversible.</p>
 
 						{suggestions.length > 0 && (
 							<div className='flex flex-col gap-2'>
@@ -196,11 +178,16 @@ const ChatPanel = ({ detectionType = 'deforestation', selectedClearing, sensitiv
 				) : (
 					<ol className='flex flex-col gap-4'>
 						{messages.map((message) => (
-							<motion.li initial={{ opacity: 0, y: reduceMotion ? 0 : 8 }} animate={{ opacity: 1, y: 0 }} key={message.id} className={message.role === 'user' ? 'flex justify-end' : 'flex justify-start'}>
+							<motion.li initial={{ opacity: 0, y: reduceMotion ? 0 : 8 }} animate={{ opacity: 1, y: 0 }} key={message.id} className={message.role === 'user' ? 'flex flex-col items-end' : 'flex flex-col items-start'}>
 								<p className={message.role === 'user' ? 'max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-sm bg-selected px-3.5 py-2.5 text-[15px] leading-normal' : 'max-w-[92%] whitespace-pre-wrap text-[15px] leading-relaxed text-body'}>
 									<span className='sr-only'>{message.role === 'user' ? 'You: ' : 'Assistant: '}</span>
 									{message.content}
 								</p>
+								{message.reply && <div className='ts-assistant-evidence'>
+									{message.reply.candidates.map((candidate) => <button type='button' key={candidate.id} className='ts-assistant-candidate' aria-label={`Investigate ${candidate.label}`} onClick={() => onAction({ type: 'select', id: candidate.id })}><strong>{candidate.label}</strong><span>{candidate.summary}</span></button>)}
+									{message.reply.actions.map((item) => <button type='button' className='ts-assistant-action' key={item.label} onClick={() => onAction(item.action)}>{item.label}</button>)}
+									{message.reply.sources.length > 0 && <details className='ts-assistant-sources'><summary>Evidence sources</summary>{message.reply.sources.map((source) => <a key={source.label} href={source.href.startsWith('/data/derived/') ? source.href : undefined} target='_blank' rel='noreferrer'>{source.label}</a>)}</details>}
+								</div>}
 							</motion.li>
 						))}
 					</ol>

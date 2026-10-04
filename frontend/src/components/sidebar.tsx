@@ -16,11 +16,11 @@ const number = (value: unknown, digits = 1) => typeof value === 'number' && Numb
 
 const validationStatus = (status: unknown) => {
 	switch (status) {
-		case 'confirmed': return { label: 'Independent observation · stronger support', tone: 'supported' };
-		case 'moderate_support': return { label: 'Independent observation · moderate support', tone: 'moderate' };
-		case 'outside_coverage': return { label: 'Independent coverage unavailable', tone: 'muted' };
-		case 'weakened': return { label: 'Independent signal weakened', tone: 'review' };
-		default: return { label: 'No independent observation', tone: 'muted' };
+		case 'confirmed': return { label: 'Independent support · stronger evidence', short: 'Independent support', tone: 'supported' };
+		case 'moderate_support': return { label: 'Independent support · moderate evidence', short: 'Moderate support', tone: 'moderate' };
+		case 'outside_coverage': return { label: 'Independent coverage unavailable', short: 'Outside independent coverage', tone: 'muted' };
+		case 'weakened': return { label: 'Independent signal weakened', short: 'Independent signal weakened', tone: 'review' };
+		default: return { label: 'No independent observation', short: 'No independent observation', tone: 'muted' };
 	}
 };
 
@@ -40,16 +40,16 @@ const Sidebar: FC<SidebarProps> = ({ contract, features, filter, selectedId, onS
 
 	if (!selected) return (
 		<aside className='ts-side-panel ts-queue-panel' aria-label='Ranked anomaly queue'>
-			<div className='ts-side-heading'><div><span className='ts-eyebrow'>PRIORITIZED FOR REVIEW</span><h2>Investigation queue</h2></div><span className='ts-queue-count'>{features.length}</span></div>
+			<div className='ts-side-heading'><div><span className='ts-eyebrow'>Prioritized for review</span><h2>Investigation queue</h2></div><span className='ts-queue-count'>{features.length}</span></div>
 			<p className='ts-side-intro'>Ranked radar-change candidates. Persistence and visual salience are evidence to inspect, not proof of cause.</p>
 			<div className='ts-queue-list'>
 				{ranked.map((feature) => {
 					const props = feature.properties;
 					const status = validationStatus(props.t4_status);
-					return <button key={String(props.id)} type='button' className='ts-queue-item' onClick={() => onSelect(feature)}>
+					return <button key={String(props.id)} type='button' className='ts-queue-item' title={contract.candidate_notes?.[String(props.id)]?.hypothesis ? `${contract.candidate_notes[String(props.id)].hypothesis} · Unverified interpretation` : undefined} onClick={() => onSelect(feature)}>
 						<span className='ts-queue-rank'>{String(rank(feature)).padStart(2, '0')}</span>
-						<span className='ts-queue-body'><span className='ts-queue-title'>Region {props.id}<span className={`ts-class-dot is-${temporalClassOf(props)}`} /></span><span className='ts-queue-sub'>{number(props.area_ha, 0)} ha <i>·</i> {contract.candidate_notes?.[String(props.id)]?.hypothesis ?? temporalLabel(feature)}</span><span className={`ts-mini-status is-${status.tone}`}>{props.t4_status === 'confirmed' || props.t4_status === 'moderate_support' ? <Check size={11} /> : <CircleDot size={10} />}{status.label}</span></span>
-						<span className='ts-queue-score'>{number(props.priority_score, 1)}<small>PRIORITY</small></span>
+						<span className='ts-queue-body'><span className='ts-queue-title'>Region {props.id}<span className={`ts-class-dot is-${temporalClassOf(props)}`} /></span><span className='ts-queue-sub'>{number(props.area_ha, 0)} ha <i>·</i> {temporalClassOf(props) === 'persistent' || temporalClassOf(props) === 't4_validated_persistent' ? 'Persistent' : temporalClassOf(props) === 'seasonal_transient' ? 'Seasonal / transient' : temporalClassOf(props) === 'late_unclassified' ? 'Late change' : 'Unclassified'}</span><span className={`ts-mini-status is-${status.tone}`} title={status.label}>{props.t4_status === 'confirmed' || props.t4_status === 'moderate_support' ? <Check size={11} /> : <CircleDot size={10} />}{status.short}</span></span>
+						<span className='ts-queue-score' title='Priority score · heuristic, not confidence'>{number(props.priority_score, 1)}<small>PRIORITY</small></span>
 						<ChevronRight size={15} className='ts-queue-chevron' />
 					</button>;
 				})}
@@ -70,8 +70,8 @@ const Sidebar: FC<SidebarProps> = ({ contract, features, filter, selectedId, onS
 
 	return <aside className='ts-side-panel ts-investigation-panel' aria-label={`Investigation for region ${props.id}`}>
 		<div className='ts-investigation-top'><button type='button' className='ts-back-button' onClick={onClear}><ArrowLeft size={14} /> Back to queue</button><span className='ts-investigation-index'>RANK {String(rank(selected) || '—').padStart(2, '0')}</span></div>
-		<div className='ts-candidate-title'><div className='ts-candidate-id'>REGION {props.id}<span className={`ts-class-dot is-${temporalClassOf(props)}`} /></div><h2>{temporalLabel(selected)}</h2><span className={`ts-status-badge is-${support.tone}`}>{support.tone === 'supported' || support.tone === 'moderate' ? <Check size={13} /> : <CircleDot size={12} />}{support.label}</span></div>
-		{contract.candidate_notes?.[String(props.id)] && <div className='ts-investigation-hypothesis'><span>INVESTIGATION HYPOTHESIS · UNVERIFIED</span><strong>{contract.candidate_notes[String(props.id)].hypothesis}</strong><p>{contract.candidate_notes[String(props.id)].detail}</p><small>{contract.candidate_notes[String(props.id)].attribution}</small></div>}
+		<div className='ts-candidate-title'><div className='ts-candidate-id'>Region {props.id}<span className={`ts-class-dot is-${temporalClassOf(props)}`} /></div><h2>{temporalLabel(selected)}</h2><span className={`ts-status-badge is-${support.tone}`}>{support.tone === 'supported' || support.tone === 'moderate' ? <Check size={13} /> : <CircleDot size={12} />}{support.label}</span></div>
+		{contract.candidate_notes?.[String(props.id)] && <div className='ts-investigation-hypothesis'><span>Unverified interpretation</span><strong>{contract.candidate_notes[String(props.id)].hypothesis}</strong><p>{contract.candidate_notes[String(props.id)].detail}</p><small>{contract.candidate_notes[String(props.id)].attribution}</small></div>}
 		<div className='ts-candidate-lead'>
 			<div><strong>{number(props.area_ha, 1)}<small> ha</small></strong><span>Candidate area</span></div>
 			<div><strong className={typeof props.mean_signed_db === 'number' && props.mean_signed_db < 0 ? 'is-negative' : 'is-positive'}>{typeof props.mean_signed_db === 'number' ? `${props.mean_signed_db > 0 ? '+' : ''}${number(props.mean_signed_db, 1)}` : `±${number(props.mean_change_db, 1)}`}<small> dB</small></strong><span>Mean radar change</span></div>
@@ -83,7 +83,7 @@ const Sidebar: FC<SidebarProps> = ({ contract, features, filter, selectedId, onS
 			<div className='ts-detail-cell'><span>Observation interval</span><strong>{dateText(firstObserved)} <ArrowUpRight size={12} /> {dateText(lastEvidence)}</strong></div>
 		</div>
 		<div className='ts-source-evidence'>
-			<div className='ts-section-kicker'><span>SOURCE EVIDENCE</span><span>{contract.scene?.product ?? 'Earth observation'}</span></div>
+			<div className='ts-section-kicker'><span>Source evidence</span><span>{contract.scene?.product ?? 'Earth observation'}</span></div>
 			<div className='ts-source-row'><span>Primary discovery</span><strong>{contract.scene?.product ?? 'RADARSAT-2 SLC'} · {contract.scene?.polarization ?? 'SAR'}</strong></div>
 			{Array.isArray(props.source_record_ids) && <div className='ts-source-row'><span>Linked source records</span><strong>{props.source_record_ids.join(' · ')}</strong></div>}
 			{props.t4_mean_signed_db != null && <div className='ts-source-row'><span>Independent observation change</span><strong>{typeof props.t4_mean_signed_db === 'number' ? `${props.t4_mean_signed_db > 0 ? '+' : ''}${number(props.t4_mean_signed_db, 2)} dB` : 'Observed'}</strong></div>}

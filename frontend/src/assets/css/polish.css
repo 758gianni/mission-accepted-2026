@@ -162,3 +162,62 @@
 .ts-coverage-key span { width:28px; height:7px; background:linear-gradient(90deg,#719caa33,#719caa88); border-radius:2px; }
 @media (prefers-reduced-motion:no-preference) { .ts-map-evidence { animation:ts-evidence-arrive .3s ease .35s both; } }
 @keyframes ts-evidence-arrive { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:translateY(0); } }
+
+/* Selected-candidate temporal evidence: one fixed crop, chronological frames. */
+.ts-temporal-viewer { margin:12px 0 22px; overflow:hidden; border-radius:12px; background:#191d22; box-shadow:0 12px 35px rgba(0,0,0,.16); }
+.ts-temporal-viewer:focus-visible { outline:2px solid #aab8c6; outline-offset:4px; }
+.ts-temporal-stage { display:grid; grid-template-columns:minmax(0,1fr) 260px; }
+.ts-temporal-image { position:relative; height:340px; overflow:hidden; background:#111418; }
+.ts-temporal-frame { position:absolute; inset:0; opacity:0; transition:opacity .45s ease; pointer-events:none; }
+.ts-temporal-frame.is-active { opacity:1; }
+.ts-temporal-frame svg { width:100%; height:100%; }
+.ts-temporal-frame svg image { filter:contrast(1.07) brightness(.84); }
+.ts-temporal-caption { display:flex; flex-direction:column; justify-content:center; align-items:flex-start; padding:28px; gap:10px; }
+.ts-temporal-counter { color:#8d98a5; font-size:10px; letter-spacing:.06em; }
+.ts-temporal-caption > strong { color:#eef1f4; font-size:29px; line-height:1.2; font-weight:550; letter-spacing:-.04em; }
+.ts-temporal-caption > span:not(.ts-temporal-counter) { font-size:12px; color:#bac4cc; }
+.ts-temporal-caption > .ts-temporal-role { margin:6px 0; padding:6px 9px; background:rgba(255,255,255,.045); border-radius:4px; }
+.ts-temporal-caption > .ts-temporal-role.is-supporting { color:#e5bd75; background:rgba(225,183,111,.075); }
+.ts-temporal-caption p { margin:2px 0 8px; color:#8d98a5; font-size:11px; line-height:1.7; }
+.ts-temporal-outline { display:flex; align-items:center; gap:7px; color:#9da8b2; font-size:11px; cursor:pointer; }
+.ts-temporal-outline input { accent-color:#e5bd75; }
+.ts-temporal-unavailable { display:flex; min-height:220px; height:100%; justify-content:center; align-items:center; flex-direction:column; gap:12px; color:#9ca8b4; font-size:13px; padding:24px; text-align:center; }
+.ts-temporal-controls { display:flex; align-items:center; gap:8px; padding:16px 24px 6px; }
+.ts-temporal-controls button { display:flex; align-items:center; justify-content:center; gap:8px; min-height:36px; padding:8px; border:0; border-radius:6px; background:rgba(255,255,255,.035); color:#c8d1d9; cursor:pointer; }
+.ts-temporal-controls button:hover:not(:disabled) { background:rgba(255,255,255,.085); }
+.ts-temporal-controls .ts-temporal-play { padding:8px 14px; margin-right:4px; background:#303942; color:#f1f3f5; font-size:12px; }
+.ts-temporal-controls button:disabled { opacity:.35; cursor:default; }
+.ts-temporal-speed { display:flex; align-items:center; gap:8px; margin-left:10px; color:#8f9ca8; font-size:10px; }
+.ts-temporal-speed select { padding:6px 8px; background:#22282f; color:#bdc7d0; border:0; border-radius:4px; font-size:11px; }
+.ts-temporal-key-hint { margin-left:auto; font-size:10px; color:#7b8996; }
+.ts-temporal-timeline { padding:14px 24px 22px; }
+.ts-temporal-timeline > input { width:100%; accent-color:#e5bd75; cursor:pointer; display:block; }
+.ts-temporal-dates { display:flex; justify-content:space-between; gap:8px; overflow-x:auto; padding-top:10px; }
+.ts-temporal-dates button { display:flex; flex-direction:column; align-items:center; gap:6px; flex-shrink:0; background:none; border:0; padding:2px 0; color:#83919e; font-size:10px; cursor:pointer; }
+.ts-temporal-dates button:first-child { align-items:flex-start; }
+.ts-temporal-dates button:last-child { align-items:flex-end; }
+.ts-temporal-dates i { display:block; width:4px; height:4px; background:#586673; border-radius:50%; }
+.ts-temporal-dates .is-active { color:#e5bd75; }
+.ts-temporal-dates .is-active i { background:#e5bd75; }
+.ts-map-evidence .ts-filmstrip { grid-template-columns:none; grid-auto-columns:minmax(160px,1fr); gap:14px; padding:3px 3px 8px; }
+.ts-map-evidence .ts-film-card { display:block; background:none; border:0; padding:0; text-align:left; cursor:pointer; color:inherit; opacity:.65; }
+.ts-map-evidence .ts-film-card.is-active { opacity:1; }
+.ts-map-evidence .ts-film-card.is-active .ts-film-image { box-shadow:0 0 0 2px #e5bd75; }
+.ts-map-evidence .ts-film-card:hover { opacity:1; }
+.ts-map-evidence .ts-film-image { height:114px; }
+.ts-map-evidence .ts-film-meta strong { font-size:13px; }
+@media (max-width:1050px) { .ts-temporal-stage { grid-template-columns:minmax(0,1fr) 220px; } .ts-temporal-caption { padding:20px; } .ts-temporal-caption > strong { font-size:24px; } .ts-temporal-key-hint { display:none; } }
+@media (max-width:650px) { .ts-temporal-stage { grid-template-columns:1fr; } .ts-temporal-image { height:280px; } .ts-temporal-caption { padding:16px 20px; } .ts-temporal-caption p { display:none; } .ts-temporal-controls { flex-wrap:wrap; padding-inline:16px; } .ts-temporal-speed { margin-left:0; } .ts-temporal-timeline { padding-inline:16px; } }
+@media (prefers-reduced-motion:reduce) { .ts-temporal-frame { transition:none; } }
+.ts-map-fullscreen { position:absolute; top:116px; right:14px; z-index:6; display:flex; align-items:center; justify-content:center; width:36px; height:34px; padding:0; border:0; border-radius:6px; background:rgba(18,22,27,.86); color:#bdc7d0; cursor:pointer; }
+.ts-map-fullscreen:hover { background:#303a44; color:#f0f3f5; }
+.ts-map-fullscreen:focus-visible { outline:2px solid #cbd5df; outline-offset:3px; }
+.ts-fullscreen-error { position:absolute; bottom:80px; right:16px; z-index:7; max-width:320px; padding:12px; border-radius:6px; color:#dfc49a; background:#24282d; font-size:12px; }
+.ts-fullscreen-header { display:flex; align-items:center; gap:28px; height:68px; padding:12px 70px 12px 20px; background:#171c21; }
+.ts-fullscreen-header > strong { color:#e6edf2; font-size:17px; font-weight:550; white-space:nowrap; }
+.ts-fullscreen-header .ts-filter-rail { margin:0; }
+.ts-map-frame:fullscreen { width:100vw; height:100dvh; min-height:0; border:0; border-radius:0; background:#171c21; }
+.ts-map-frame:fullscreen .ts-map-canvas { height:calc(100dvh - 107px); min-height:0; }
+.ts-map-frame:fullscreen .ts-map-fullscreen { top:17px; }
+.ts-map-frame:fullscreen .ts-map-tools { top:84px; }
+@media (max-width:750px) { .ts-fullscreen-header > strong { display:none; } .ts-fullscreen-header { gap:0; } }

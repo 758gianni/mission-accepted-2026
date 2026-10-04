@@ -1,6 +1,6 @@
 import { ArrowLeft, ArrowUpRight, Check, ChevronRight, CircleDot, Mountain, ShieldAlert, Sparkles } from 'lucide-react';
 import { useMemo, type FC } from 'react';
-import { geometryCenter, geometryPath, rankCandidates, temporalClassOf, type CandidateFeature, type CandidateFilter, type DashboardContract, type GeoBounds } from '../terra-data';
+import { rankCandidates, temporalClassOf, type CandidateFeature, type CandidateFilter, type DashboardContract } from '../terra-data';
 
 interface SidebarProps {
 	contract: DashboardContract;
@@ -11,7 +11,6 @@ interface SidebarProps {
 	onClear: () => void;
 }
 
-const assetUrl = (value?: string | null) => value ? `/data/${value.replace(/^\//, '')}` : undefined;
 const dateText = (value?: string) => value ? new Date(value).toLocaleDateString('en', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' }) : '—';
 const number = (value: unknown, digits = 1) => typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString('en', { maximumFractionDigits: digits }) : '—';
 
@@ -32,36 +31,6 @@ const temporalLabel = (candidate: CandidateFeature) => {
 	if (temporalClass === 't4_validated_persistent') return 'Persistent surface-change anomaly';
 	if (temporalClass === 'late_unclassified') return 'Late change · persistence unknown';
 	return 'Unclassified radar anomaly';
-};
-
-const AcquisitionEvidence: FC<{ contract: DashboardContract; candidate: CandidateFeature }> = ({ contract, candidate }) => {
-	const bounds = (contract.image_bounds ?? contract.scene?.footprint) as GeoBounds | undefined;
-	const center = bounds ? geometryCenter(candidate.geometry, bounds, 1000, 1060) : [500, 530] as [number, number];
-	const crop = `${center[0] - 115} ${center[1] - 82} 230 164`;
-	const path = bounds ? geometryPath(candidate.geometry, bounds, 1000, 1060) : '';
-	const observations = contract.acquisitions ?? [];
-	const supportingSources = (candidate.properties.t4_observation as { source_ids?: string[] } | null)?.source_ids ?? [];
-
-	return <section className='ts-evidence-section'>
-		<div className='ts-section-kicker'><span>OBSERVATION SEQUENCE</span><span>{observations.length} dates · same ground crop</span></div>
-		<div className='ts-filmstrip'>
-			{observations.map((observation) => {
-				const image = assetUrl(observation.image);
-				const imageLayout = observation.image ? contract.imagery_layout?.[observation.image] : undefined;
-				const isValidation = supportingSources.some((id) => observation.source_ids?.includes(id));
-				return <article className={`ts-film-card ${isValidation ? 'is-supporting' : ''}`} tabIndex={0} key={observation.id}>
-					<div className='ts-film-image'>
-						{image ? <svg viewBox={crop} preserveAspectRatio='xMidYMid slice' role='img' aria-label={`${observation.sensor ?? 'Satellite'} ${observation.date} candidate-area crop`}>
-							{imageLayout ? <svg x='0' y='0' width='1000' height='1060' viewBox={`${imageLayout.x} ${imageLayout.y} ${imageLayout.content_width} ${imageLayout.content_height}`} preserveAspectRatio='none' overflow='hidden'><image href={image} width={imageLayout.width} height={imageLayout.height} /></svg> : <image href={image} x='0' y='0' width='1000' height='1060' preserveAspectRatio='none' />}
-							<path d={path} fill='rgba(244,206,120,.32)' stroke='#f7d990' strokeWidth='2.5' vectorEffect='non-scaling-stroke' />
-						</svg> : <div className='ts-film-unavailable'><CircleDot size={18} /><span>No preview asset</span></div>}
-				<span className={`ts-film-role ${isValidation ? 'is-validation' : ''}`}>{isValidation ? 'INDEPENDENT SUPPORT' : observation.role ?? 'OBSERVATION'}</span>
-					</div>
-					<div className='ts-film-meta'><strong>{dateText(observation.date)}</strong><span>{observation.sensor ?? 'EO source'}{observation.source_count && observation.source_count > 1 ? ` · ${observation.source_count} scenes` : ''}</span></div>
-				</article>;
-			})}
-		</div>
-	</section>;
 };
 
 const Sidebar: FC<SidebarProps> = ({ contract, features, filter, selectedId, onSelect, onClear }) => {
@@ -124,4 +93,4 @@ const Sidebar: FC<SidebarProps> = ({ contract, features, filter, selectedId, onS
 	</aside>;
 };
 
-export { Sidebar, AcquisitionEvidence };
+export { Sidebar };

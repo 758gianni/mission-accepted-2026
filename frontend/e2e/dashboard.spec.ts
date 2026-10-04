@@ -187,3 +187,34 @@ test('judge flow preserves detections through clustering and opens the investiga
 	const contract = await (await page.request.get('/data/derived/contract.json')).json();
 	await expect(page.locator('.ts-map-evidence .ts-film-card')).toHaveCount(contract.acquisitions.length);
 });
+
+test('map fullscreen preserves exploration, filters, and selection on exit', async ({ page }) => {
+	await page.goto('/');
+	await page.locator('.ts-queue-item').first().click();
+	await page.getByRole('button', { name: 'Enter map fullscreen' }).click();
+	await expect.poll(() => page.evaluate(() => document.fullscreenElement?.classList.contains('ts-map-frame'))).toBe(true);
+	const map = page.getByTestId('map-viewport');
+	const box = await map.boundingBox();
+	if (!box) throw new Error('Fullscreen map has no bounds');
+	expect(box.width).toBeGreaterThan(1800);
+	expect(box.height).toBeGreaterThan(850);
+	const center = await map.getAttribute('data-map-center');
+	await page.mouse.move(box.x + box.width * .65, box.y + box.height * .5);
+	await page.mouse.down();
+	await page.mouse.move(box.x + box.width * .6, box.y + box.height * .57, { steps: 8 });
+	await page.mouse.up();
+	await expect.poll(() => map.getAttribute('data-map-center')).not.toBe(center);
+	const zoom = Number(await map.getAttribute('data-map-zoom'));
+	await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
+	await expect.poll(async () => Number(await map.getAttribute('data-map-zoom'))).toBeGreaterThan(zoom);
+	const filters = page.getByRole('navigation', { name: 'Filter anomaly classes' });
+	await filters.getByRole('button', { name: /^Persistent/ }).click();
+	await expect(filters.getByRole('button', { name: /^Persistent/ })).toHaveAttribute('aria-pressed', 'true');
+	await page.getByRole('button', { name: 'Exit map fullscreen' }).click();
+	await expect.poll(() => page.evaluate(() => document.fullscreenElement === null)).toBe(true);
+	await expect(page.getByLabel('Investigation for region 2')).toBeVisible();
+	await expect(filters.getByRole('button', { name: /^Persistent/ })).toHaveAttribute('aria-pressed', 'true');
+	await page.getByRole('button', { name: 'Enter map fullscreen' }).click();
+	await page.evaluate(() => document.exitFullscreen());
+	await expect(page.getByRole('button', { name: 'Enter map fullscreen' })).toBeVisible();
+});

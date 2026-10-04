@@ -25,6 +25,9 @@ supporting evidence, not blended into invented confidence percentages.
 - `pipeline_4date.py`: reuse the per-region validation results and distinguish
   **9 strong** (`>=2.5 dB`) from **2 moderate** (`>=1.5 dB`) corroborations.
   T4 (December 21) is chronologically before T3 (January 7); do not sort by label.
+  Live metadata identifies T1/T2/T3 as relative orbit **256**, T4 as **13**.
+  Keep separate geometry-stratified stacks. The prototype's T4 result is
+  cross-geometry corroboration, not interchangeable same-track history.
 - `terrain_analysis.py`: reuse DEM cache, slope and geometric risk calculations,
   and disclosed ranking `magnitude × sqrt(area) × (1 − risk_fraction)`.
 - `eodms_orders.py`: reuse stable order/record tracking, CRC verification,

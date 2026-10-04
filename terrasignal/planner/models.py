@@ -44,7 +44,8 @@ class Observation:
     @property
     def comparison_ready(self):
         return all(x is not None for x in (self.relative_orbit, self.polarization,
-                   self.beam_mnemonic, self.orbit_direction, self.look_direction))
+                   self.beam_mnemonic, self.orbit_direction, self.look_direction,
+                   self.processing_level,self.incidence_low_deg,self.incidence_high_deg))
 
     def to_dict(self):
         return asdict(self)

@@ -8,6 +8,7 @@ from urllib.request import urlopen
 from .coverage import plan_acquisitions, render_coverage_report
 from .eodms import search
 from .models import Observation
+from terrasignal.catalogue import Catalogue
 
 BOUNDARY_SOURCE = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_admin_0_countries.geojson"
 
@@ -89,6 +90,10 @@ def main():
                             "start":args.start,"end":args.end,"unfiltered_observation_count":len(observations)}
     (args.out/"plan.json").write_text(json.dumps(plan, indent=2))
     (args.out/"coverage_report.md").write_text(render_coverage_report(plan))
+    catalogue=Catalogue(args.out/'acquisition-catalogue.sqlite')
+    catalogue.register_observations(observations)
+    if args.raw_dir: catalogue.import_journals(args.raw_dir)
+    catalogue.close()
     print(json.dumps({"observations": len(observations), "groups": len(plan["groups"]),
                       "decisions": {k: sum(d["plan_decision"] == k for d in plan["decisions"]) for k in ("acquire", "reuse", "reject")},
                       "coverage": {k:v for k,v in plan["coverage"].items() if isinstance(v,(int,float))},
